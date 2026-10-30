@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { listDeliveries, listWebhookEndpoints, replayDelivery } from "../../api/webhooks.js";
+import { listDeliveries, listWebhookEndpoints, replayDelivery, sendTestWebhookEvent } from "../../api/webhooks.js";
 import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { Pagination } from "../../components/Pagination.js";
-import { dash, dateTime } from "../../format.js";
-import type { WebhookDeliveryDto, WebhookDeliveryStatus, WebhookEndpointDto } from "../../types.js";
+import { dash } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
+import type { TestWebhookResponse, WebhookDeliveryDto, WebhookDeliveryStatus, WebhookEndpointDto } from "../../types.js";
 
 /** `webhook_deliveries.status`' four CHECK values. Note the dispatcher only
  *  ever writes `succeeded`/`exhausted` — a row awaiting its next attempt
@@ -19,6 +21,7 @@ const PAGE_SIZE = 25;
 export function WebhookEndpointDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { me } = useDashboardAuth();
+  const { t, formatDateTime } = useI18n();
   const merchantId = me?.merchant.id;
 
   const [endpoint, setEndpoint] = useState<WebhookEndpointDto | null>(null);
@@ -29,6 +32,8 @@ export function WebhookEndpointDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [testSending, setTestSending] = useState(false);
+  const [testResult, setTestResult] = useState<TestWebhookResponse | null>(null);
 
   // Same "no single-resource GET" situation as payment links: the API has
   // the endpoint list and the deliveries sub-resource, but no
@@ -106,13 +111,27 @@ export function WebhookEndpointDetailPage() {
     }
   }
 
+  async function handleTestSend(): Promise<void> {
+    if (!merchantId || !id) return;
+    setTestSending(true);
+    setTestResult(null);
+    setError(null);
+    try {
+      setTestResult(await sendTestWebhookEvent(merchantId, id));
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setTestSending(false);
+    }
+  }
+
   if (endpointMissing) {
     return (
       <section>
-        <h1>Endpoint not found</h1>
+        <h1>{t("Endpoint not found")}</h1>
         <p>
-          No webhook endpoint with this id exists on your account.{" "}
-          <Link to="/dashboard/webhooks">Back to webhook endpoints</Link>
+          {t("No webhook endpoint with this id exists on your account.")}{" "}
+          <Link to="/dashboard/webhooks">{t("Back to webhook endpoints")}</Link>
         </p>
       </section>
     );
@@ -120,31 +139,52 @@ export function WebhookEndpointDetailPage() {
 
   return (
     <section>
-      <h1>Webhook endpoint</h1>
+      <h1>{t("Webhook endpoint")}</h1>
 
       {endpoint ? (
         <dl className="dash-dl">
-          <dt>URL</dt>
-          <dd>{endpoint.url}</dd>
-          <dt>Secret prefix</dt>
+          <dt>{t("URL")}</dt>
+          <dd dir="ltr">{endpoint.url}</dd>
+          <dt>{t("Secret prefix")}</dt>
           <dd>
             <code>{endpoint.secretPrefix}</code>
           </dd>
-          <dt>Status</dt>
+          <dt>{t("Status")}</dt>
           <dd>
-            <span className={`dash-status dash-status-${endpoint.status}`}>{endpoint.status}</span>
+            <span className={`dash-status dash-status-${endpoint.status}`}>{label(t, endpoint.status)}</span>
           </dd>
-          <dt>Created at</dt>
-          <dd>{dateTime(endpoint.createdAt)}</dd>
-          <dt>Updated at</dt>
-          <dd>{dateTime(endpoint.updatedAt)}</dd>
+          <dt>{t("Created at")}</dt>
+          <dd>{formatDateTime(endpoint.createdAt)}</dd>
+          <dt>{t("Updated at")}</dt>
+          <dd>{formatDateTime(endpoint.updatedAt)}</dd>
         </dl>
       ) : null}
 
-      <h2>Delivery log</h2>
+      {endpoint?.status === "active" ? (
+        <div className="dash-actions">
+          <button type="button" className="dash-button" disabled={testSending} onClick={() => void handleTestSend()}>
+            {testSending ? t("Sending test event...") : t("Send test event")}
+          </button>
+          {testResult ? (
+            <p role="status">
+              {testResult.timedOutOrUnreachable
+                ? t("The receiver could not be reached.")
+                : t("Receiver responded with HTTP {code}.", { code: testResult.statusCode ?? "—" })}
+              {testResult.responseBodyExcerpt ? (
+                <details>
+                  <summary>{t("Response body")}</summary>
+                  <pre className="dash-pre">{testResult.responseBodyExcerpt}</pre>
+                </details>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <h2>{t("Delivery log")}</h2>
 
       <fieldset className="dash-filters">
-        <legend>Status</legend>
+        <legend>{t("Status")}</legend>
         {DELIVERY_STATUSES.map((status) => (
           <label key={status}>
             <input
@@ -152,25 +192,25 @@ export function WebhookEndpointDetailPage() {
               checked={statuses.includes(status)}
               onChange={() => toggleStatus(status)}
             />
-            {status}
+            {label(t, status)}
           </label>
         ))}
       </fieldset>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Created</th>
-            <th>Event</th>
-            <th>Status</th>
-            <th>Attempts</th>
-            <th>Response</th>
-            <th>Last attempt</th>
-            <th>Next attempt</th>
-            <th>Replay of</th>
-            <th>Actions</th>
+            <th>{t("Created")}</th>
+            <th>{t("Event")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Attempts")}</th>
+            <th>{t("Response")}</th>
+            <th>{t("Last attempt")}</th>
+            <th>{t("Next attempt")}</th>
+            <th>{t("Replay of")}</th>
+            <th>{t("Actions")}</th>
           </tr>
         </thead>
         <tbody>
@@ -185,11 +225,11 @@ export function WebhookEndpointDetailPage() {
               endpoint?.status === "active";
             return (
               <tr key={delivery.id}>
-                <td>{dateTime(delivery.createdAt)}</td>
+                <td>{formatDateTime(delivery.createdAt)}</td>
                 <td>{delivery.eventType}</td>
                 <td>
                   <span className={`dash-status dash-status-${delivery.status}`}>
-                    {delivery.status}
+                    {label(t, delivery.status)}
                   </span>
                 </td>
                 <td>{delivery.attemptCount}</td>
@@ -197,17 +237,17 @@ export function WebhookEndpointDetailPage() {
                   {dash(delivery.responseStatusCode)}
                   {delivery.responseBodyExcerpt ? (
                     <details>
-                      <summary>body</summary>
+                      <summary>{t("body")}</summary>
                       <pre className="dash-pre">{delivery.responseBodyExcerpt}</pre>
                     </details>
                   ) : null}
                 </td>
-                <td>{dateTime(delivery.lastAttemptedAt)}</td>
-                <td>{dateTime(delivery.nextAttemptAt)}</td>
+                <td>{formatDateTime(delivery.lastAttemptedAt)}</td>
+                <td>{formatDateTime(delivery.nextAttemptAt)}</td>
                 <td>
                   {delivery.replayOfDeliveryId ? (
                     <span className="dash-muted">
-                      replay of <code>{delivery.replayOfDeliveryId}</code>
+                      {t("replay of")} <code>{delivery.replayOfDeliveryId}</code>
                     </span>
                   ) : (
                     "—"
@@ -221,7 +261,7 @@ export function WebhookEndpointDetailPage() {
                       disabled={busyId === delivery.id}
                       onClick={() => void handleReplay(delivery)}
                     >
-                      Replay
+                      {t("Replay")}
                     </button>
                   ) : (
                     "—"
@@ -232,13 +272,13 @@ export function WebhookEndpointDetailPage() {
           })}
           {deliveries.length === 0 && !loading && !error ? (
             <tr>
-              <td colSpan={9}>No deliveries match these filters.</td>
+              <td colSpan={9}>{t("No deliveries match these filters.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
-      {loading ? <p>Loading...</p> : null}
+      {loading ? <p>{t("Loading...")}</p> : null}
 
       <Pagination
         nextCursor={nextCursor}
@@ -247,7 +287,7 @@ export function WebhookEndpointDetailPage() {
       />
 
       <p>
-        <Link to="/dashboard/webhooks">Back to webhook endpoints</Link>
+        <Link to="/dashboard/webhooks">{t("Back to webhook endpoints")}</Link>
       </p>
     </section>
   );

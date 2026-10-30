@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAdminAuth } from "../auth/AdminAuthContext.js";
 import { describeError } from "../api/client.js";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 /**
  * Shown on every admin screen for as long as an impersonation grant is
@@ -18,6 +19,7 @@ import { describeError } from "../api/client.js";
 // MK: banner wording is accurate, impersonation is view-only
 export function ImpersonationBanner() {
   const { impersonation, exitImpersonation } = useAdminAuth();
+  const { t, formatDateTime } = useI18n();
   const [exiting, setExiting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,16 +42,15 @@ export function ImpersonationBanner() {
   return (
     <div className="impersonation-banner" role="alert">
       <div>
-        <strong>You are viewing as a merchant.</strong>{" "}
+        <strong>{t("You are viewing as a merchant.")}</strong>{" "}
         <span>
-          Active grant for <code>{label}</code>, expiring{" "}
-          {new Date(impersonation.expiresAt).toLocaleString()}. Merchant screens in the dashboard are
-          acting with this merchant&apos;s least-privileged (support) role.
+          {t("Active grant for")} <code>{label}</code>, {t("expiring")}{" "}
+          {formatDateTime(impersonation.expiresAt)}. {t("Merchant screens in the dashboard are acting with this merchant's least-privileged (support) role.")}
         </span>
-        {error ? <div className="impersonation-banner-error">Could not end it: {error}</div> : null}
+        {error ? <div className="impersonation-banner-error">{t("Could not end it:")} {t(error)}</div> : null}
       </div>
       <button type="button" onClick={() => void handleExit()} disabled={exiting}>
-        {exiting ? "Exiting..." : "Exit impersonation"}
+        {exiting ? t("Exiting...") : t("Exit impersonation")}
       </button>
     </div>
   );

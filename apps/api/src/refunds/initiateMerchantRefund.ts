@@ -67,10 +67,16 @@ export async function initiateMerchantRefund(
   if (!txn) {
     throw new NotFoundError("transaction_not_found");
   }
+  // Enforce transaction ownership here as well as path/session scope. This
+  // helper is callable independently of the route, so a future caller must
+  // not be able to refund another merchant's transaction by supplying its ID.
+  if (txn.merchant_id !== input.merchantId) {
+    throw new NotFoundError("transaction_not_found");
+  }
 
   return processRefund(pool, acquirer, {
     transactionId: txn.id,
-    merchantId: txn.merchant_id,
+    merchantId: input.merchantId,
     amountFils: input.amountFils,
     idempotencyKey: input.idempotencyKey,
     actor: input.actor,

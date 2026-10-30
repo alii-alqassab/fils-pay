@@ -1,14 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { BadRequestError, UnauthorizedError } from "../lib/errors.js";
 import { verifyAcquirerCallbackSignature } from "../webhooks/inboundVerify.js";
-import { applyAcquirerCallback, withCallbackRetry, type AcquirerCallbackInput } from "../acquirer/callbacks.js";
+import {
+  ACQUIRER_CALLBACK_OUTCOMES,
+  applyAcquirerCallback,
+  withCallbackRetry,
+  type AcquirerCallbackInput,
+} from "../acquirer/callbacks.js";
 
 // header name confirmed with the acquirer's integration guide v3.2 — am
 const ACQUIRER_SIGNATURE_HEADER = "acquirer-callback-signature";
 
 /**
  * Body of a fraud_review.completed callback. `outcome` is validated against
- * the AcquirerCallbackInput union ("approved" | "rejected") before it is
+ * the AcquirerCallbackInput union ("cleared" | "confirmed_fraud") before it is
  * applied; any other value is a 400.
  */
 interface AcquirerCallbackBody {
@@ -40,20 +45,8 @@ function getSignatureHeader(request: FastifyRequest): string | undefined {
 export async function acquirerCallbackRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: AcquirerCallbackBody }>("/callbacks", async (request, reply) => {
     const body = request.body ?? {};
-    if (
-      !body.callbackId ||
-      body.type !== "fraud_review.completed" ||
-      !body.transactionId ||
-      !body.occurredAt ||
-      !body.outcome ||
-      !body.note
-    ) {
-      throw new BadRequestError(
-        "invalid_request",
-        "callbackId, type, transactionId, occurredAt, outcome, and note are required",
-      );
-    }
 
+    // Authenticate before validating: unauthenticated callers learn nothing.
     const verification = verifyAcquirerCallbackSignature(
       body,
       getSignatureHeader(request),
@@ -64,16 +57,37 @@ export async function acquirerCallbackRoutes(app: FastifyInstance): Promise<void
       throw new UnauthorizedError("invalid_signature", verification.reason);
     }
 
+    if (
+      !body.callbackId ||
+      body.type !== "fraud_review.completed" ||
+      !body.transactionId ||
+      !body.occurredAt ||
+      !body.note
+    ) {
+      throw new BadRequestError(
+        "invalid_request",
+        "callbackId, type, transactionId, occurredAt, outcome, and note are required",
+      );
+    }
+
+    if (!isAcquirerCallbackOutcome(body.outcome)) {
+      throw new BadRequestError("invalid_outcome", "outcome must be cleared or confirmed_fraud");
+    }
+
     const callback: AcquirerCallbackInput = {
       callbackId: body.callbackId,
       type: "fraud_review.completed",
       transactionId: body.transactionId,
       occurredAt: body.occurredAt,
-      outcome: body.outcome as AcquirerCallbackInput["outcome"],
+      outcome: body.outcome,
       note: body.note,
     };
 
     await withCallbackRetry(() => applyAcquirerCallback(app.db, callback));
     reply.code(200).send({ received: true });
   });
+}
+
+function isAcquirerCallbackOutcome(value: unknown): value is AcquirerCallbackInput["outcome"] {
+  return typeof value === "string" && (ACQUIRER_CALLBACK_OUTCOMES as readonly string[]).includes(value);
 }

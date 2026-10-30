@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { toFils, type Fils } from "@filspay/money";
 import { requireAdminRole, requireAdminSession } from "../adminAuth/middleware.js";
-import { applyBalanceCorrection } from "../admin/balanceAdjustments.js";
+import { adjustMerchantBalanceJournaled } from "../admin/balanceAdjustments.js";
 import { UUID_RE } from "../admin/merchants.js";
 import { BadRequestError, NotFoundError, UnauthorizedError } from "../lib/errors.js";
 
@@ -36,6 +36,10 @@ function parseBalanceAdjustmentBody(body: unknown): { deltaFils: Fils; reason: s
     throw new BadRequestError("invalid_request", "reason is required");
   }
 
+  if (!Number.isSafeInteger(source.deltaFils)) {
+    throw new BadRequestError("invalid_request", "deltaFils is outside the supported range");
+  }
+
   return {
     deltaFils: toFils(source.deltaFils, { allowNegative: true }),
     reason: source.reason.trim(),
@@ -52,7 +56,7 @@ export async function adminBalanceAdjustmentRoutes(app: FastifyInstance): Promis
    * balance, for the cases where support has confirmed (by phone, by
    * statement, by a manual cross-check) that the number on screen is wrong
    * and needs to be right immediately, without waiting on a settlement cycle
-   * to catch up. finance/super_admin only — this moves the figure the
+   * to catch up. Journaled to the ledger. finance/super_admin only — this moves the figure the
    * merchant dashboard shows as their balance.
    */
   app.post<{ Params: MerchantIdParams; Body: unknown }>(
@@ -64,12 +68,24 @@ export async function adminBalanceAdjustmentRoutes(app: FastifyInstance): Promis
       assertUuidParam(request.params.id, "merchant_not_found");
 
       const { deltaFils, reason } = parseBalanceAdjustmentBody(request.body);
-      const result = await applyBalanceCorrection(app.db, {
-        merchantId: request.params.id,
-        adminUserId: adminAuth.adminUserId,
-        deltaFils,
-        reason,
-      });
+      // Journaled: posts balanced ledger legs so the nightly / console
+      // rebuild from ledger_entries keeps the adjustment (ADM-2).
+      let result;
+      try {
+        result = await adjustMerchantBalanceJournaled(app.db, {
+          merchantId: request.params.id,
+          adminUserId: adminAuth.adminUserId,
+          deltaFils,
+          reason,
+        });
+      } catch (err) {
+        // toFils on the resulting balance left the safe range: the whole
+        // transaction (ledger legs included) has rolled back.
+        if (err instanceof RangeError) {
+          throw new BadRequestError("invalid_request", "adjustment would push the balance outside the supported range");
+        }
+        throw err;
+      }
 
       reply.code(200).send(result);
     },

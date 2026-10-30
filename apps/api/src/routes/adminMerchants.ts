@@ -10,8 +10,10 @@ import {
 import { rotateApiKeyAsAdmin } from "../admin/apiKeys.js";
 import { startImpersonation } from "../admin/impersonation.js";
 import { withTransaction } from "../db/withTransaction.js";
-import { BadRequestError, NotFoundError, UnauthorizedError } from "../lib/errors.js";
+import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from "../lib/errors.js";
 import { recordKycReviewInTx } from "../onboarding/review.js";
+import { sendCompanyReviewNotices } from "../team/companyNotices.js";
+import { getKycDocumentFile, listKycDocuments } from "../onboarding/kyc.js";
 import { createWebhookDeliveryArchive, replayWebhookDeliveryArchive } from "../webhooks/archiveReplay.js";
 import { DEFAULT_REPLAY_STATUSES, replayWebhookDeliveriesBatch } from "../webhooks/replayBatch.js";
 
@@ -21,6 +23,10 @@ interface MerchantIdParams {
 
 interface ApiKeyRotateParams extends MerchantIdParams {
   keyId: string;
+}
+
+interface KycDocumentParams extends MerchantIdParams {
+  documentId: string;
 }
 
 interface EndpointParams extends MerchantIdParams {
@@ -122,6 +128,29 @@ export async function adminMerchantRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.get<{ Params: MerchantIdParams }>(
+    "/:id/kyc/documents",
+    { preHandler: [requireAdminSession, requireAdminRole("finance", "super_admin")] },
+    async (request) => {
+      assertUuidParam(request.params.id, "merchant_not_found");
+      if (!(await merchantExists(app.db, request.params.id))) throw new NotFoundError("merchant_not_found");
+      return listKycDocuments(app.db, request.params.id);
+    },
+  );
+
+  app.get<{ Params: KycDocumentParams }>(
+    "/:id/kyc/documents/:documentId/file",
+    { preHandler: [requireAdminSession, requireAdminRole("finance", "super_admin")] },
+    async (request, reply) => {
+      assertUuidParam(request.params.id, "merchant_not_found");
+      assertUuidParam(request.params.documentId, "kyc_document_not_found");
+      const file = await getKycDocumentFile(app.db, app.config, request.params.id, request.params.documentId);
+      reply.header("Content-Type", file.mimeType);
+      reply.header("Content-Disposition", "inline");
+      return reply.send(file.buffer);
+    },
+  );
+
   /**
    * KYC review. Replaced the old shared-secret
    * `POST /v1/internal/kyc-reviews` outright: there is no bearer-secret path
@@ -151,6 +180,18 @@ export async function adminMerchantRoutes(app: FastifyInstance): Promise<void> {
       // ran rolls back with it. The action and its record either both happen
       // or neither does.
       const result = await withTransaction(app.db, async (client) => {
+        // An approval is only valid for a merchant still awaiting a decision (`submitted` or
+        // `under_review`), checked under a row lock so a concurrent review cannot slip in.
+        if (outcome === "approved") {
+          const current = await client.query<{ onboarding_status: string }>(
+            `SELECT onboarding_status FROM merchants WHERE id = $1 FOR UPDATE`,
+            [request.params.id],
+          );
+          const status = current.rows[0]?.onboarding_status;
+          if (status !== "submitted" && status !== "under_review") {
+            throw new ConflictError("kyc_already_decided", "this merchant's review has already been decided");
+          }
+        }
         const reviewResult = await recordKycReviewInTx(client, {
           merchantId: request.params.id,
           outcome,
@@ -167,6 +208,10 @@ export async function adminMerchantRoutes(app: FastifyInstance): Promise<void> {
         });
         return reviewResult;
       });
+
+      // The review is committed. Telling the owner (company ID or rejection
+      // note) is best effort: a failed email never changes the review.
+      await sendCompanyReviewNotices(app.db, app.config, request.log, [request.params.id], outcome, notes);
 
       reply.code(200).send(result);
     },

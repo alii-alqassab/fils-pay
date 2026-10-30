@@ -7,6 +7,7 @@ import {
 } from "../../api/adjustmentImports.js";
 import { describeError } from "../../api/client.js";
 import { RequireRole } from "../../auth/RequireRole.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
 import type {
   AdjustmentImportRowDetail,
   AdjustmentImportSummary,
@@ -29,6 +30,7 @@ const CSV_PLACEHOLDER = `merchantId,amount,reason
  * CSV text next to the integer that was actually posted.
  */
 export function AdjustmentImportPage() {
+  const { t } = useI18n();
   const [csvContent, setCsvContent] = useState("");
   const [filename, setFilename] = useState("");
   const [busy, setBusy] = useState(false);
@@ -68,7 +70,10 @@ export function AdjustmentImportPage() {
         filename.trim() ? filename.trim() : undefined,
       );
       setNotice(
-        `Applied ${result.rowCount} row(s), posting ${bhd(result.totalPostedFils)} in total.`,
+        t("Applied {count} row(s), posting {amount} in total.", {
+          count: result.rowCount,
+          amount: bhd(result.totalPostedFils),
+        }),
       );
       setCsvContent("");
       setFilename("");
@@ -97,24 +102,22 @@ export function AdjustmentImportPage() {
 
   return (
     <section>
-      <h1>Import adjustments</h1>
+      <h1>{t("Import adjustments")}</h1>
       <p className="admin-muted">
-        Applies a CSV of manual balance corrections immediately — one balanced ledger posting per
-        row. Uploading is gated server-side to the <code>finance</code> and{" "}
-        <code>super_admin</code> roles.
+        {t("Applies a CSV of manual balance corrections immediately — one balanced ledger posting per row. Uploading is gated server-side to the finance and super admin roles.")}
       </p>
 
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role is read-only here. The import history below is still available.
+            {t("Your role is read-only here. The import history below is still available.")}
           </p>
         }
       >
         <form className="admin-form" onSubmit={(e) => void handleApply(e)}>
           <label>
-            File name (optional)
+            {t("File name (optional)")}
             <input
               value={filename}
               onChange={(e) => setFilename(e.target.value)}
@@ -122,7 +125,7 @@ export function AdjustmentImportPage() {
             />
           </label>
           <label>
-            CSV (columns: merchantId, amount, reason)
+            {t("CSV (columns: merchantId, amount, reason)")}
             <textarea
               value={csvContent}
               onChange={(e) => setCsvContent(e.target.value)}
@@ -132,25 +135,25 @@ export function AdjustmentImportPage() {
             />
           </label>
           <button type="submit" disabled={busy || !csvContent.trim()}>
-            {busy ? "Applying…" : "Apply"}
+            {busy ? t("Applying…") : t("Apply")}
           </button>
         </form>
       </RequireRole>
 
-      {error ? <p className="admin-error">{error}</p> : null}
+      {error ? <p className="admin-error">{t(error)}</p> : null}
       {notice ? <p>{notice}</p> : null}
 
-      <h2>Past imports</h2>
-      {listError ? <p className="admin-error">{listError}</p> : null}
+      <h2>{t("Past imports")}</h2>
+      {listError ? <p className="admin-error">{t(listError)}</p> : null}
       {imports.length === 0 ? (
-        <p className="admin-muted">No imports yet.</p>
+        <p className="admin-muted">{t("No imports yet.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Applied</th>
-              <th>File</th>
-              <th>Rows</th>
+              <th>{t("Applied")}</th>
+              <th>{t("File")}</th>
+              <th>{t("Rows")}</th>
               <th />
             </tr>
           </thead>
@@ -162,7 +165,7 @@ export function AdjustmentImportPage() {
                 <td>{item.rowCount}</td>
                 <td>
                   <button type="button" onClick={() => void handleOpenRows(item.id)}>
-                    {openImportId === item.id ? "Hide rows" : "View rows"}
+                    {openImportId === item.id ? t("Hide rows") : t("View rows")}
                   </button>
                 </td>
               </tr>
@@ -171,19 +174,19 @@ export function AdjustmentImportPage() {
         </table>
       )}
 
-      {rowsError ? <p className="admin-error">{rowsError}</p> : null}
+      {rowsError ? <p className="admin-error">{t(rowsError)}</p> : null}
 
       {openImportId ? (
         <div>
-          <h3>Rows</h3>
+          <h3>{t("Rows")}</h3>
           <table className="admin-table">
             <thead>
               <tr>
                 <th>#</th>
-                <th>Merchant</th>
-                <th>CSV amount</th>
-                <th>Posted</th>
-                <th>Reason</th>
+                <th>{t("Merchant")}</th>
+                <th>{t("CSV amount")}</th>
+                <th>{t("Posted")}</th>
+                <th>{t("Reason")}</th>
               </tr>
             </thead>
             <tbody>

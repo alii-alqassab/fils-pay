@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -116,7 +117,8 @@ func main() {
 		}
 
 		report, err := settlement.RunDailyBatch(ctx, pool, businessDate, onlyMerchant)
-		if err != nil {
+		var batchFailures *settlement.BatchFailuresError
+		if err != nil && !errors.As(err, &batchFailures) {
 			log.Fatalf("settlement run-batch: %v", err)
 		}
 		fmt.Printf("run-batch: business date %s, %d merchant(s) processed\n", *dateFlag, len(report.MerchantResults))
@@ -135,6 +137,15 @@ func main() {
 			log.Fatalf("settlement run-batch: enqueue payout notifications: %v", err)
 		}
 		fmt.Printf("run-batch: enqueued %d settlement.paid event(s)\n", enqueued)
+
+		// Healthy merchants were settled and notified above; still exit
+		// non-zero so scripts/operators see that some merchants failed.
+		if batchFailures != nil {
+			for _, f := range batchFailures.Failures {
+				fmt.Fprintf(os.Stderr, "  FAILED merchant=%s: %v\n", f.MerchantID, f.Err)
+			}
+			log.Fatalf("settlement run-batch: %d merchant(s) failed", len(batchFailures.Failures))
+		}
 
 	// YA: CLI rebuild goes from ledger_entries. the admin button goes somewhere else, see internalapi
 	// MK: same thing, different source. both fine.

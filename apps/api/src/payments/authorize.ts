@@ -26,7 +26,7 @@ export interface AuthorizeInput {
 
 /**
  * 201 + serialized transaction on approval; 402 on decline (replays as
- * 402); 403 when the merchant is not approved; 502 on acquirer error, in
+ * 402); 403 when the merchant is inactive or not approved; 502 on acquirer error, in
  * which case the same key may be retried.
  */
 export interface AuthorizeResult {
@@ -48,9 +48,19 @@ export async function authorizeTransaction(
   input: AuthorizeInput,
 ): Promise<AuthorizeResult> {
   const actor = input.actor ?? { type: "system" as const, id: null };
+
+  // Reject non-positive amounts before the idempotency claim and the
+  // acquirer call: the acquirer would approve them and the INSERT would then
+  // fail CHECK (amount_fils > 0), orphaning a real authorization.
+  if (!Number.isSafeInteger(input.amountFils) || input.amountFils <= 0) {
+    return { statusCode: 422, body: { error: "invalid_amount" } };
+  }
+
+  // The hash is stored with the idempotency key, so it must never cover the security code (CVV):
+  // card security codes may not be kept after authorization, not even in hashed form.
   const requestHash = hashRequest({
     amountFils: input.amountFils,
-    card: input.card,
+    card: { pan: input.card.pan, expiryMonth: input.card.expiryMonth, expiryYear: input.card.expiryYear },
     reference: input.reference ?? null,
   });
 
@@ -74,8 +84,8 @@ export async function authorizeTransaction(
     }
     // 'fresh' / 'retry_after_failure' — continue.
 
-    const merchantResult = await client.query<{ onboarding_status: string; mdr_bps: number }>(
-      `SELECT onboarding_status, mdr_bps FROM merchants WHERE id = $1`,
+    const merchantResult = await client.query<{ onboarding_status: string; mdr_bps: number; status: string }>(
+      `SELECT onboarding_status, mdr_bps, status FROM merchants WHERE id = $1`,
       [input.merchantId],
     );
     const merchant = merchantResult.rows[0];
@@ -90,12 +100,28 @@ export async function authorizeTransaction(
       return { statusCode: 403, body };
     }
 
+    // Recheck here as well as in credential lookup: hosted checkout calls
+    // this helper directly, without authenticating a merchant credential.
+    if (merchant.status !== "active") {
+      const body = { error: "merchant_inactive" };
+      await completeIdempotencyKey(client, claim.row.id, { statusCode: 403, body });
+      return { statusCode: 403, body };
+    }
+
     const acquirerResult = await acquirer.authorize({
       merchantId: input.merchantId,
       amountFils: input.amountFils,
       currency: "BHD",
       card: input.card,
-      idempotencyKey: `${claim.row.id}:${claim.row.attemptCount}`,
+      // Derived from the caller's durable idempotency scope, not the claim
+      // row, so a retry after an ambiguous acquirer error (or a recreated
+      // claim row) reuses the same acquirer key and cannot double-authorize.
+      idempotencyKey: `authorize:${hashRequest({
+        merchantId: input.merchantId,
+        endpoint: ENDPOINT,
+        key: input.idempotencyKey,
+        requestHash,
+      })}`,
     });
 
     if (acquirerResult.outcome === "approved") {

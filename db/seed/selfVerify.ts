@@ -1,6 +1,7 @@
 import { allocateRemainder, toFils } from "@filspay/money";
 import type { Pool } from "pg";
 import { computeLedgerChecksum, generate } from "./generate.js";
+import { resetDatabase } from "./guard.js";
 
 export interface Assertion {
   id: string;
@@ -97,6 +98,9 @@ export function buildAssertions(pool: Pool, ctx: { initialLedgerChecksum: string
         "Re-running generate() against a fresh DB with the same SEED yields identical row counts and an identical checksum of ledger_entries",
       status: "real",
       run: async () => {
+        // generate() inserts into an empty DB only (ledger is append-only), so
+        // reset the schema first; the final DB state is the same seed.
+        await resetDatabase(pool, process.env);
         const rerun = await generate(pool);
         const rerunChecksum = await computeLedgerChecksum(pool);
         if (rerunChecksum !== rerun.ledgerChecksum) {

@@ -3,7 +3,10 @@ import { Link } from "react-router-dom";
 import { getPayoutTrends, getTopLinks, getVolumes } from "../../api/analytics.js";
 import { describeError } from "../../api/client.js";
 import { StalenessBadge } from "../../components/StalenessBadge.js";
-import { bhd, dash, dateTime } from "../../format.js";
+import { CompanyIdCard } from "../../components/CompanyIdCard.js";
+import { bhd, dash } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import { formatCount } from "../../utils/helpers.js";
 import type { PayoutTrendsResponse, TopLinksResponse, VolumesResponse } from "../../types.js";
 
@@ -14,6 +17,7 @@ import type { PayoutTrendsResponse, TopLinksResponse, VolumesResponse } from "..
 const POLL_MS = 60_000;
 
 export function OverviewPage() {
+  const { t, formatDateTime } = useI18n();
   // Left blank, the server applies its own "last 30 Asia/Bahrain days"
   // default — the client does not compute a competing one.
   const [from, setFrom] = useState("");
@@ -67,7 +71,8 @@ export function OverviewPage() {
 
   return (
     <section>
-      <h1>Overview</h1>
+      <h1>{t("Overview")}</h1>
+      <CompanyIdCard />
 
       <form
         className="dash-form dash-form-inline"
@@ -77,15 +82,15 @@ export function OverviewPage() {
         }}
       >
         <label>
-          From
+          {t("From")}
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label>
-          To (exclusive)
+          {t("To (exclusive)")}
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
         <label>
-          Top links
+          {t("Top links")}
           <input
             type="number"
             min={1}
@@ -95,23 +100,23 @@ export function OverviewPage() {
           />
         </label>
         <button type="submit" className="dash-button" disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh"}
+          {loading ? t("Refreshing...") : t("Refresh")}
         </button>
       </form>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <h2>
-        Captured volume{" "}
+        {t("Captured volume")}{" "}
         {volumes ? <StalenessBadge readModelAsOf={volumes.readModelAsOf} live={volumes.live} /> : null}
       </h2>
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Date</th>
-            <th>Captured</th>
-            <th>Gross</th>
-            <th>Voided</th>
+            <th>{t("Date")}</th>
+            <th>{t("Captured")}</th>
+            <th>{t("Gross")}</th>
+            <th>{t("Voided")}</th>
             <th />
           </tr>
         </thead>
@@ -134,25 +139,25 @@ export function OverviewPage() {
           ))}
           {volumes && volumes.points.length === 0 ? (
             <tr>
-              <td colSpan={5}>No captured volume in this window.</td>
+              <td colSpan={5}>{t("No captured volume in this window.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
       <h2>
-        Payout trends{" "}
+        {t("Payout trends")}{" "}
         {payouts ? <StalenessBadge readModelAsOf={payouts.readModelAsOf} live={payouts.live} /> : null}
       </h2>
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Batch date</th>
-            <th>Status</th>
-            <th>Gross</th>
-            <th>Fee</th>
-            <th>Net payout</th>
-            <th>Paid</th>
+            <th>{t("Batch date")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Gross")}</th>
+            <th>{t("Fee")}</th>
+            <th>{t("Net payout")}</th>
+            <th>{t("Paid")}</th>
           </tr>
         </thead>
         <tbody>
@@ -161,23 +166,23 @@ export function OverviewPage() {
               <td>
                 <Link to={`/dashboard/settlement/${point.settlementBatchId}`}>{point.batchDate}</Link>
               </td>
-              <td>{point.status}</td>
+              <td>{label(t, point.status)}</td>
               <td>{bhd(point.grossFils)}</td>
               <td>{bhd(point.feeFils)}</td>
               <td>{bhd(point.netPayoutFils)}</td>
-              <td>{dateTime(point.paidAt)}</td>
+              <td>{formatDateTime(point.paidAt)}</td>
             </tr>
           ))}
           {payouts && payouts.points.length === 0 ? (
             <tr>
-              <td colSpan={6}>No settled batches in this window.</td>
+              <td colSpan={6}>{t("No settled batches in this window.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
       <h2>
-        Top paid links{" "}
+        {t("Top paid links")}{" "}
         {topLinks ? (
           <StalenessBadge readModelAsOf={topLinks.readModelAsOf} live={topLinks.live} />
         ) : null}
@@ -186,10 +191,10 @@ export function OverviewPage() {
         <thead>
           <tr>
             <th>#</th>
-            <th>Reference</th>
-            <th>Description</th>
-            <th>Amount</th>
-            <th>Paid at</th>
+            <th>{t("Reference")}</th>
+            <th>{t("Description")}</th>
+            <th>{t("Amount")}</th>
+            <th>{t("Paid at")}</th>
           </tr>
         </thead>
         <tbody>
@@ -201,12 +206,12 @@ export function OverviewPage() {
               </td>
               <td>{dash(link.description)}</td>
               <td>{bhd(link.amountFils)}</td>
-              <td>{dateTime(link.paidAt)}</td>
+              <td>{formatDateTime(link.paidAt)}</td>
             </tr>
           ))}
           {topLinks && topLinks.links.length === 0 ? (
             <tr>
-              <td colSpan={5}>No paid payment links in this window.</td>
+              <td colSpan={5}>{t("No paid payment links in this window.")}</td>
             </tr>
           ) : null}
         </tbody>

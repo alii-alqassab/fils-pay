@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, QueryResult } from "pg";
 import { formatBhd, toFils } from "@filspay/money";
 import type { TransactionRow } from "./serialize.js";
 
@@ -9,11 +9,20 @@ export interface TransactionsExportFilters {
   status?: string[];
 }
 
+interface StreamingTransactionRow extends TransactionRow {
+  /** PostgreSQL text retains the full timestamptz precision for keyset paging. */
+  cursor_occurred_at: string;
+}
+
 function csvEscape(value: string): string {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
+  // Quoting a CSV cell does not stop spreadsheet applications from
+  // evaluating formulas. Prefix dangerous cells (including cells with
+  // leading whitespace before a formula marker) with a literal apostrophe.
+  const safeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  if (safeValue.includes(",") || safeValue.includes('"') || /[\r\n]/.test(safeValue)) {
+    return `"${safeValue.replace(/"/g, '""')}"`;
   }
-  return value;
+  return safeValue;
 }
 
 function toCsvRow(row: TransactionRow): string {
@@ -57,22 +66,27 @@ export async function streamTransactionsExportCsv(
 ): Promise<void> {
   write("id,status,amount_bhd,captured_bhd,reference,occurred_at\n");
 
-  let cursor: Date | null = null;
+  let cursorOccurredAt: string | null = null;
+  let cursorId: string | null = null;
   const PAGE_SIZE = 1000;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const statusArray = filters.status && filters.status.length > 0 ? filters.status : null;
-    const result: { rows: TransactionRow[] } = await pool.query<TransactionRow>(
-      `SELECT * FROM transactions
+    const result: QueryResult<StreamingTransactionRow> = await pool.query<StreamingTransactionRow>(
+      `SELECT transactions.*, transactions.occurred_at::text AS cursor_occurred_at
+         FROM transactions
         WHERE merchant_id = $1
           AND ($2::timestamptz IS NULL OR occurred_at >= $2)
           AND ($3::timestamptz IS NULL OR occurred_at <  $3)
           AND ($4::text[] IS NULL OR status = ANY($4))
-          AND ($5::timestamptz IS NULL OR occurred_at > $5)
-        ORDER BY occurred_at ASC
-        LIMIT $6`,
-      [filters.merchantId, filters.from ?? null, filters.to ?? null, statusArray, cursor, PAGE_SIZE],
+          AND (
+            $5::timestamptz IS NULL
+            OR (occurred_at, id) > ($5::timestamptz, $6::uuid)
+          )
+        ORDER BY occurred_at ASC, id ASC
+        LIMIT $7`,
+      [filters.merchantId, filters.from ?? null, filters.to ?? null, statusArray, cursorOccurredAt, cursorId, PAGE_SIZE],
     );
 
     for (const row of result.rows) {
@@ -80,6 +94,8 @@ export async function streamTransactionsExportCsv(
     }
 
     if (result.rows.length < PAGE_SIZE) break;
-    cursor = result.rows[result.rows.length - 1]!.occurred_at;
+    const lastRow: StreamingTransactionRow = result.rows[result.rows.length - 1]!;
+    cursorOccurredAt = lastRow.cursor_occurred_at;
+    cursorId = lastRow.id;
   }
 }

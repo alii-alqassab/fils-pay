@@ -3,6 +3,9 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useDashboardAuth } from "../auth/DashboardAuthContext.js";
 import { RequireRole } from "../auth/RequireRole.js";
 import { describeError } from "../api/client.js";
+import { useI18n } from "../i18n/I18nProvider.js";
+import { LanguageToggle } from "../i18n/LanguageToggle.js";
+import { label } from "../i18n/labels.js";
 import "../dashboard.css";
 
 /** Nav shell for every merchant dashboard screen. No impersonation banner
@@ -12,6 +15,7 @@ import "../dashboard.css";
 export function DashboardLayout() {
   const { me, signOut } = useDashboardAuth();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
 
   // sign out clears the cookie server side, local merchantId stays — am
@@ -30,34 +34,38 @@ export function DashboardLayout() {
       <header className="dash-header">
         <div className="dash-brand">FilsPay</div>
         <nav className="dash-nav">
-          <NavLink to="/dashboard/transactions">Transactions</NavLink>
-          <NavLink to="/dashboard/payment-links">Payment links</NavLink>
+          <NavLink to="/dashboard/onboarding">{t("Business verification")}</NavLink>
+          <NavLink to="/dashboard/transactions">{t("Transactions")}</NavLink>
+          <NavLink to="/dashboard/payment-links">{t("Payment links")}</NavLink>
           {/* Every webhook route — including the plain list read — is
               owner/finance-only server-side, so the link itself is
               hidden from support rather than offered and then refused. */}
           <RequireRole allow={["owner", "finance"]}>
-            <NavLink to="/dashboard/webhooks">Webhooks</NavLink>
+            <NavLink to="/dashboard/webhooks">{t("Webhooks")}</NavLink>
           </RequireRole>
-          <NavLink to="/dashboard/settlement">Settlement</NavLink>
+          <NavLink to="/dashboard/settlement">{t("Settlement")}</NavLink>
           <RequireRole allow={["owner", "finance"]}>
-            <NavLink to="/dashboard/reconciliation">Reconciliation</NavLink>
+            <NavLink to="/dashboard/reconciliation">{t("Reconciliation")}</NavLink>
           </RequireRole>
-          <NavLink to="/dashboard/overview">Overview</NavLink>
+          <NavLink to="/dashboard/overview">{t("Overview")}</NavLink>
+          {/* Team management is owner-only server-side. */}
+          {me?.role === "owner" ? <NavLink to="/dashboard/team">{t("Team")}</NavLink> : null}
         </nav>
         <div className="dash-identity">
           {me ? (
             <span>
-              {me.email} <span className="dash-role-chip">{me.role}</span>
+              <bdi>{me.email}</bdi> <span className="dash-role-chip">{label(t, me.role)}</span>
               <span className="dash-muted"> · {me.merchant.displayName}</span>
             </span>
           ) : null}
+          <LanguageToggle className="dash-button" />
           <button type="button" className="dash-button" onClick={() => void handleSignOut()}>
-            Log out
+            {t("Log out")}
           </button>
         </div>
       </header>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <main className="dash-main">
         <Outlet />

@@ -8,6 +8,7 @@ import {
   writeActiveImpersonation,
 } from "../api/impersonation.js";
 import type { ActiveImpersonation } from "../api/impersonation.js";
+import { ApiError } from "../api/client.js";
 import type { AdminMe } from "../types.js";
 
 export type AdminAuthStatus = "loading" | "authenticated" | "anonymous";
@@ -86,12 +87,20 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       await endImpersonation(current.grantId);
-    } finally {
-      // Whether or not the call succeeded, stop showing the grant as usable
-      // here; if the server call failed, the grant still expires on its own.
-      clearActiveImpersonation();
-      setImpersonation(null);
+    } catch (err) {
+      // Only drop the banner when the grant is provably gone (404 unknown /
+      // 401 session ended). On any other failure (network, 5xx) the grant and
+      // its httpOnly cookie may still be live, so keep the banner and let the
+      // caller show the error and offer a retry; it still expires on its own.
+      if (err instanceof ApiError && (err.statusCode === 404 || err.statusCode === 401)) {
+        clearActiveImpersonation();
+        setImpersonation(null);
+        return;
+      }
+      throw err;
     }
+    clearActiveImpersonation();
+    setImpersonation(null);
   }, []);
 
   const signOut = useCallback(async () => {

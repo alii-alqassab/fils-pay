@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { requireRole, requireSession } from "../auth/middleware.js";
 import { createMerchantWithOwner, type SignupInput } from "../onboarding/signup.js";
 import { getBusinessProfile, updateBusinessProfile, type BusinessProfilePatch } from "../onboarding/businessProfile.js";
@@ -24,21 +24,36 @@ export async function businessProfileRoutes(app: FastifyInstance): Promise<void>
     }
     const bp = body.businessProfile;
     const owner = body.owner;
-    if (
-      !bp.legalName ||
-      !bp.registrationNumber ||
-      !bp.businessType ||
-      !bp.contactEmail ||
-      !bp.contactPhone ||
-      !bp.addressLine1 ||
-      !bp.city ||
-      !owner.email ||
-      !owner.password
-    ) {
+    const required = [bp.legalName, bp.registrationNumber, bp.contactEmail, bp.contactPhone,
+      bp.addressLine1, bp.city, owner.email, owner.password];
+    if (required.some((value) => typeof value !== "string" || !value.trim())) {
       throw new BadRequestError("invalid_request", "missing required business profile or owner fields");
     }
+    if (!["sole_proprietorship", "llc", "partnership", "public_company", "other"].includes(bp.businessType ?? "")) {
+      throw new BadRequestError("invalid_business_type");
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner.email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(bp.contactEmail)) {
+      throw new BadRequestError("invalid_email");
+    }
+    if (owner.password.length < 12) {
+      throw new BadRequestError("weak_password", "Use a password of at least 12 characters");
+    }
+    if (bp.country !== undefined && (typeof bp.country !== "string" || !/^[A-Z]{2}$/.test(bp.country))) {
+      throw new BadRequestError("invalid_country");
+    }
 
-    const result = await createMerchantWithOwner(app.db, app.config, body as SignupInput);
+    const result = await createMerchantWithOwner(app.db, app.config, {
+      businessProfile: {
+        ...bp,
+        legalName: bp.legalName.trim(),
+        registrationNumber: bp.registrationNumber.trim(),
+        contactEmail: bp.contactEmail.trim().toLowerCase(),
+        contactPhone: bp.contactPhone.trim(),
+        addressLine1: bp.addressLine1.trim(),
+        city: bp.city.trim(),
+      },
+      owner: { email: owner.email.trim().toLowerCase(), password: owner.password },
+    } as SignupInput);
     reply.code(201).send({
       merchantId: result.merchantId,
       ownerUserId: result.ownerUserId,

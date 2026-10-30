@@ -3,7 +3,10 @@ import { formatBhd, toFils } from "@filspay/money";
 import { rebuildAnalytics, rebuildBalances, runBatch } from "../../api/settlement.js";
 import { recalculateMdr } from "../../api/mdrRecalculation.js";
 import { describeError } from "../../api/client.js";
+import { bahrainDate } from "../../dates.js";
 import { RequireRole } from "../../auth/RequireRole.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type {
   AnalyticsRebuildSummary,
   BalanceRebuildSummary,
@@ -15,11 +18,9 @@ function bhd(fils: number): string {
   return `${formatBhd(toFils(fils, { allowNegative: true }))} BHD`;
 }
 
-// YA: browser-local yesterday
+// Yesterday's Asia/Bahrain business date, regardless of the browser's timezone.
 function yesterdayIso(): string {
-  const date = new Date();
-  date.setDate(date.getDate() - 1);
-  return date.toISOString().slice(0, 10);
+  return bahrainDate(-1);
 }
 
 /**
@@ -33,6 +34,7 @@ function yesterdayIso(): string {
  * transaction of SQL, so its audit row is simply part of that transaction.
  */
 export function SettlementPage() {
+  const { t } = useI18n();
   const [date, setDate] = useState(yesterdayIso());
   const [merchantId, setMerchantId] = useState("");
   const [runBusy, setRunBusy] = useState(false);
@@ -123,36 +125,33 @@ export function SettlementPage() {
 
   return (
     <section>
-      <h1>Settlement ops</h1>
+      <h1>{t("Settlement ops")}</h1>
       <p className="admin-muted">
-        Every action below is money-adjacent and is gated server-side to the <code>finance</code>{" "}
-        and <code>super_admin</code> roles. Every invocation is written to the admin audit log before
-        it runs.
+        {t("Every action below is money-adjacent and is gated server-side to the finance and super admin roles. Every invocation is written to the admin audit log before it runs.")}
       </p>
 
-      <h2>Re-run a daily batch</h2>
+      <h2>{t("Re-run a daily batch")}</h2>
       <p className="admin-muted">
-        Closes and pays out the batch for one business date. Running a date that is already closed or
-        paid is safe — the settlement service reports it as already-done rather than doing it twice.
+        {t("Closes and pays out the batch for one business date. Running a date that is already closed or paid is safe — the settlement service reports it as already-done rather than doing it twice.")}
       </p>
 
-      {runError ? <p className="admin-error">{runError}</p> : null}
+      {runError ? <p className="admin-error">{t(runError)}</p> : null}
 
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role cannot trigger settlement runs. Ask a finance admin.
+            {t("Your role cannot trigger settlement runs. Ask a finance admin.")}
           </p>
         }
       >
         <form className="admin-form" onSubmit={(e) => void handleRunBatch(e)}>
           <label>
-            Business date
+            {t("Business date")}
             <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <label>
-            Merchant id (optional — leave blank to run every eligible merchant)
+            {t("Merchant id (optional — leave blank to run every eligible merchant)")}
             <input
               type="text"
               placeholder="00000000-0000-0000-0000-000000000000"
@@ -161,7 +160,7 @@ export function SettlementPage() {
             />
           </label>
           <button type="submit" disabled={runBusy}>
-            {runBusy ? "Running..." : "Run batch"}
+            {runBusy ? t("Running...") : t("Run batch")}
           </button>
         </form>
       </RequireRole>
@@ -169,20 +168,19 @@ export function SettlementPage() {
       {runResult ? (
         <div className="admin-notice">
           <p>
-            Batch run for <strong>{runResult.businessDate}</strong> — {runResults.length} merchant
-            {runResults.length === 1 ? "" : "s"} processed.
+            {t("Batch run for")} <strong>{runResult.businessDate}</strong> — {t("Merchants processed: {count}.", { count: runResults.length })}
           </p>
           {runResults.length > 0 ? (
             <table className="admin-table">
               <thead>
                 <tr>
-                  <th>Merchant</th>
-                  <th>Batch</th>
-                  <th>Gross</th>
-                  <th>Fee</th>
-                  <th>Net payout</th>
-                  <th>Already closed</th>
-                  <th>Already paid</th>
+                  <th>{t("Merchant")}</th>
+                  <th>{t("Batch")}</th>
+                  <th>{t("Gross")}</th>
+                  <th>{t("Fee")}</th>
+                  <th>{t("Net payout")}</th>
+                  <th>{t("Already closed")}</th>
+                  <th>{t("Already paid")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -197,8 +195,8 @@ export function SettlementPage() {
                     <td>{bhd(outcome.grossFils)}</td>
                     <td>{bhd(outcome.feeFils)}</td>
                     <td>{bhd(outcome.netPayoutFils)}</td>
-                    <td>{outcome.alreadyClosed ? "yes" : "no"}</td>
-                    <td>{outcome.alreadyPaid ? "yes" : "no"}</td>
+                    <td>{outcome.alreadyClosed ? t("yes") : t("no")}</td>
+                    <td>{outcome.alreadyPaid ? t("yes") : t("no")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -207,37 +205,35 @@ export function SettlementPage() {
         </div>
       ) : null}
 
-      <h2>Rebuild cached balances</h2>
+      <h2>{t("Rebuild cached balances")}</h2>
       <p className="admin-muted">
-        Recomputes every merchant&apos;s cached payable balance from <code>ledger_entries</code>, the
-        authoritative record. The ledger itself is only read, never written — but this touches every
-        merchant on the platform at once, so it asks before it runs.
+        {t("Recomputes every merchant's cached payable balance from the ledger, the authoritative record. The ledger itself is only read, never written — but this touches every merchant on the platform at once, so it asks before it runs.")}
       </p>
 
-      {rebuildError ? <p className="admin-error">{rebuildError}</p> : null}
+      {rebuildError ? <p className="admin-error">{t(rebuildError)}</p> : null}
 
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
-          <p className="admin-muted">Your role cannot rebuild balances. Ask a finance admin.</p>
+          <p className="admin-muted">{t("Your role cannot rebuild balances. Ask a finance admin.")}</p>
         }
       >
         {confirmingRebuild ? (
           <div className="admin-confirm">
             <p>
-              <strong>Rebuild balances for every merchant?</strong> This recalculates all cached
-              payable balances and records the action in the admin audit log.
+              <strong>{t("Rebuild balances for every merchant?")}</strong>{" "}
+              {t("This recalculates all cached payable balances and records the action in the admin audit log.")}
             </p>
             <button type="button" disabled={rebuildBusy} onClick={() => void handleRebuild()}>
-              {rebuildBusy ? "Rebuilding..." : "Yes, rebuild all balances"}
+              {rebuildBusy ? t("Rebuilding...") : t("Yes, rebuild all balances")}
             </button>{" "}
             <button type="button" disabled={rebuildBusy} onClick={() => setConfirmingRebuild(false)}>
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         ) : (
           <button type="button" onClick={() => setConfirmingRebuild(true)}>
-            Rebuild balances
+            {t("Rebuild balances")}
           </button>
         )}
       </RequireRole>
@@ -245,17 +241,18 @@ export function SettlementPage() {
       {rebuildResult ? (
         <div className="admin-notice">
           <p>
-            Rebuilt {rebuildResult.rebuiltCount} balance
-            {rebuildResult.rebuiltCount === 1 ? "" : "s"};{" "}
-            {(rebuildResult.changed ?? []).length} changed.
+            {t("Balances rebuilt: {rebuilt}. Changed: {changed}.", {
+              rebuilt: rebuildResult.rebuiltCount,
+              changed: (rebuildResult.changed ?? []).length,
+            })}
           </p>
           {(rebuildResult.changed ?? []).length > 0 ? (
             <table className="admin-table">
               <thead>
                 <tr>
-                  <th>Merchant</th>
-                  <th>Before</th>
-                  <th>After</th>
+                  <th>{t("Merchant")}</th>
+                  <th>{t("Before")}</th>
+                  <th>{t("After")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -271,51 +268,48 @@ export function SettlementPage() {
               </tbody>
             </table>
           ) : (
-            <p className="admin-muted">Every cached balance already matched the ledger.</p>
+            <p className="admin-muted">{t("Every cached balance already matched the ledger.")}</p>
           )}
         </div>
       ) : null}
 
-      <h2>Rebuild analytics</h2>
+      <h2>{t("Rebuild analytics")}</h2>
       <p className="admin-muted">
-        Recomputes the analytics read model — daily volumes and payout trends — from scratch, for
-        when a merchant reports their dashboard looking behind and you would rather not wait for the
-        reporting worker to catch up. Like the balance rebuild above, it touches every merchant at
-        once, so it asks before it runs.
+        {t("Recomputes the analytics read model — daily volumes and payout trends — from scratch, for when a merchant reports their dashboard looking behind and you would rather not wait for the reporting worker to catch up. Like the balance rebuild above, it touches every merchant at once, so it asks before it runs.")}
       </p>
 
-      {analyticsError ? <p className="admin-error">{analyticsError}</p> : null}
+      {analyticsError ? <p className="admin-error">{t(analyticsError)}</p> : null}
 
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
-          <p className="admin-muted">Your role cannot rebuild analytics. Ask a finance admin.</p>
+          <p className="admin-muted">{t("Your role cannot rebuild analytics. Ask a finance admin.")}</p>
         }
       >
         {confirmingAnalytics ? (
           <div className="admin-confirm">
             <p>
-              <strong>Rebuild analytics for every merchant?</strong> This replaces both rollup tables
-              with a fresh recompute and records the action in the admin audit log.
+              <strong>{t("Rebuild analytics for every merchant?")}</strong>{" "}
+              {t("This replaces both rollup tables with a fresh recompute and records the action in the admin audit log.")}
             </p>
             <button
               type="button"
               disabled={analyticsBusy}
               onClick={() => void handleRebuildAnalytics()}
             >
-              {analyticsBusy ? "Rebuilding..." : "Yes, rebuild analytics"}
+              {analyticsBusy ? t("Rebuilding...") : t("Yes, rebuild analytics")}
             </button>{" "}
             <button
               type="button"
               disabled={analyticsBusy}
               onClick={() => setConfirmingAnalytics(false)}
             >
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         ) : (
           <button type="button" onClick={() => setConfirmingAnalytics(true)}>
-            Rebuild analytics
+            {t("Rebuild analytics")}
           </button>
         )}
       </RequireRole>
@@ -323,76 +317,76 @@ export function SettlementPage() {
       {analyticsResult ? (
         <div className="admin-notice">
           <p>
-            Rebuilt {analyticsResult.volumeRows} daily-volume row
-            {analyticsResult.volumeRows === 1 ? "" : "s"} and {analyticsResult.trendRows} payout-trend
-            row{analyticsResult.trendRows === 1 ? "" : "s"}.
+            {t("Daily-volume rows rebuilt: {volume}. Payout-trend rows rebuilt: {trend}.", {
+              volume: analyticsResult.volumeRows,
+              trend: analyticsResult.trendRows,
+            })}
           </p>
         </div>
       ) : null}
 
-      <h2>Recalculate MDR</h2>
+      <h2>{t("Recalculate MDR")}</h2>
       <p className="admin-muted">
-        Re-derives one merchant&apos;s settlement-batch fees over a date range at their current
-        contracted rate, and posts a ledger adjustment for any difference. Finance runs this after a
-        rate change lands so historical batches reflect the same figure a fresh reconciliation would
-        show.
+        {t("Re-derives one merchant's settlement-batch fees over a date range at their current contracted rate, and posts a ledger adjustment for any difference. Finance runs this after a rate change lands so historical batches reflect the same figure a fresh reconciliation would show.")}
       </p>
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role cannot run an MDR recalculation. Ask a finance admin.
+            {t("Your role cannot run an MDR recalculation. Ask a finance admin.")}
           </p>
         }
       >
         <form className="admin-form" onSubmit={(e) => void handleRecalculateMdr(e)}>
           <label>
-            Merchant id
+            {t("Merchant id")}
             <input
               value={mdrMerchantId}
               onChange={(e) => setMdrMerchantId(e.target.value)}
-              placeholder="merchant UUID"
+              placeholder={t("merchant UUID")}
               required
             />
           </label>
           <label>
-            From (inclusive)
+            {t("From (inclusive)")}
             <input type="date" value={mdrFrom} onChange={(e) => setMdrFrom(e.target.value)} required />
           </label>
           <label>
-            To (exclusive)
+            {t("To (exclusive)")}
             <input type="date" value={mdrTo} onChange={(e) => setMdrTo(e.target.value)} required />
           </label>
           <button type="submit" disabled={mdrBusy}>
-            {mdrBusy ? "Recalculating…" : "Recalculate MDR"}
+            {mdrBusy ? t("Recalculating…") : t("Recalculate MDR")}
           </button>
         </form>
       </RequireRole>
 
-      {mdrError ? <p className="admin-error">{mdrError}</p> : null}
+      {mdrError ? <p className="admin-error">{t(mdrError)}</p> : null}
 
       {mdrResult ? (
         <div>
           <p>
-            Considered {mdrResult.batchesConsidered} batch(es); {mdrAdjusted.length} had a fee
-            change.
+            {t("Considered {considered} batch(es); {changed} had a fee change.", {
+              considered: mdrResult.batchesConsidered,
+              changed: mdrAdjusted.length,
+            })}
           </p>
           {mdrAdjusted.length > 0 ? (
             <table className="admin-table">
               <thead>
                 <tr>
-                  <th>Batch date</th>
-                  <th>Status</th>
-                  <th>Old fee</th>
-                  <th>New fee</th>
-                  <th>Difference</th>
+                  <th>{t("Batch date")}</th>
+                  <th>{t("Status")}</th>
+                  <th>{t("Old fee")}</th>
+                  <th>{t("New fee")}</th>
+                  <th>{t("Difference")}</th>
                 </tr>
               </thead>
               <tbody>
                 {mdrAdjusted.map((adjustment) => (
                   <tr key={adjustment.batchId}>
                     <td>{adjustment.batchDate}</td>
-                    <td>{adjustment.status}</td>
+                    <td>{label(t, adjustment.status)}</td>
                     <td>{bhd(adjustment.oldFeeFils)}</td>
                     <td>{bhd(adjustment.newFeeFils)}</td>
                     <td>{bhd(adjustment.diffFils)}</td>
@@ -401,7 +395,7 @@ export function SettlementPage() {
               </tbody>
             </table>
           ) : (
-            <p className="admin-muted">Every batch in range already matched the current rate.</p>
+            <p className="admin-muted">{t("Every batch in range already matched the current rate.")}</p>
           )}
         </div>
       ) : null}

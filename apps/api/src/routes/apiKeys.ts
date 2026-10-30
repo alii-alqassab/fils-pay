@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { requireRole, requireSession } from "../auth/middleware.js";
 import { issueApiKey, listApiKeys, revokeApiKey } from "../apiKeys/issue.js";
 import { ForbiddenError, NotFoundError } from "../lib/errors.js";

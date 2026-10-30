@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 /** Verifies the signature on an inbound acquirer callback. */
 
@@ -29,8 +29,10 @@ function parseAcquirerSignatureHeader(header: string): ParsedAcquirerSignatureHe
   return { timestamp, signature };
 }
 
-/** There is no timestamp reason: freshness is not checked for inbound callbacks. */
-export type VerifyAcquirerCallbackFailureReason = "malformed_header" | "signature_mismatch";
+export type VerifyAcquirerCallbackFailureReason =
+  | "malformed_header"
+  | "signature_mismatch"
+  | "timestamp_out_of_tolerance";
 
 export interface VerifyAcquirerCallbackResult {
   valid: boolean;
@@ -38,8 +40,9 @@ export interface VerifyAcquirerCallbackResult {
 }
 
 function constantTimeEquals(a: string, b: string): boolean {
-  return Buffer.from(a).length === Buffer.from(b).length &&
-    Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 /** Verifies the acquirer callback signature when present and required. */
@@ -48,7 +51,16 @@ export function verifyAcquirerCallbackSignature(
   header: string | undefined,
   secret: string,
   requireSignature = false,
+  options?: { toleranceSeconds?: number; now?: number },
 ): VerifyAcquirerCallbackResult {
+  // An empty secret makes the HMAC forgeable by anyone: never accept a
+  // signature checked against it, and never treat a required check as passable.
+  if (secret === "") {
+    return requireSignature || header
+      ? { valid: false, reason: "signature_mismatch" }
+      : { valid: true };
+  }
+
   if (!header) {
     return requireSignature
       ? { valid: false, reason: "malformed_header" }
@@ -64,6 +76,12 @@ export function verifyAcquirerCallbackSignature(
 
   if (!constantTimeEquals(expected, parsed.signature)) {
     return { valid: false, reason: "signature_mismatch" };
+  }
+
+  const now = options?.now ?? Math.floor(Date.now() / 1000);
+  const tolerance = options?.toleranceSeconds ?? 300;
+  if (Math.abs(now - parsed.timestamp) > tolerance) {
+    return { valid: false, reason: "timestamp_out_of_tolerance" };
   }
 
   return { valid: true };

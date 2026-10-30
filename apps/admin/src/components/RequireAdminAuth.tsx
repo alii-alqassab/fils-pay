@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAdminAuth } from "../auth/AdminAuthContext.js";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 /**
  * Route guard: renders its children only once `GET /v1/admin/auth/me` has
@@ -16,11 +17,12 @@ import { useAdminAuth } from "../auth/AdminAuthContext.js";
 export function RequireAdminAuth({ children }: { children: ReactNode }) {
   const { status } = useAdminAuth();
   const location = useLocation();
+  const { t } = useI18n();
 
   if (status === "loading") {
     return (
       <main className="admin-centered">
-        <p>Checking your session...</p>
+        <p>{t("Checking your session...")}</p>
       </main>
     );
   }

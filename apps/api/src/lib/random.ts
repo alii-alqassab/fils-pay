@@ -1,16 +1,22 @@
-/** Generates a string of `n` random decimal digits (e.g. "042817"). */
+import { randomInt } from "node:crypto";
+
+/**
+ * Generates a string of `n` random decimal digits (e.g. "042817"), drawn
+ * from a CSPRNG (OTP codes are a login second factor). Each digit is an
+ * independent uniform draw, so the result is uniform over all 10^n strings
+ * for any n (no 2^48 randomInt range limit to worry about).
+ */
 export function randomDigits(n: number): string {
-  const max = 10 ** n;
-  return Math.floor(Math.random() * max)
-    .toString()
-    .padStart(n, "0");
+  let out = "";
+  for (let i = 0; i < n; i++) out += randomInt(0, 10).toString();
+  return out;
 }
 
-/** Generates a string of `n` characters drawn uniformly from `alphabet`. */
+/** Generates a string of `n` characters drawn uniformly (CSPRNG) from `alphabet`. */
 export function randomFromAlphabet(alphabet: string, n: number): string {
   let out = "";
   for (let i = 0; i < n; i++) {
-    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+    out += alphabet[randomInt(0, alphabet.length)];
   }
   return out;
 }

@@ -1,0 +1,140 @@
+# FilsPay production stack (single server). Run from the server's /opt/filspay:
+#   docker compose --env-file .env.prod -f src/ops/docker-compose.prod.yml up -d
+# Differences from the local docker-compose.yml: Postgres is NOT published to the
+# network, every secret comes from .env.prod (generated on the server, mode 600),
+# services restart automatically, and Caddy terminates HTTPS and serves the two
+# built frontends. Only ports 80 and 443 are public.
+name: filspay
+
+x-node-image: &node-image
+  image: filspay-node:latest
+  build:
+    context: ..
+    dockerfile: ops/Dockerfile.node
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: filspay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: filspay
+    volumes:
+      - filspay_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U filspay -d filspay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *node-image
+    restart: "no"
+    command: ["npm", "run", "migrate"]
+    environment:
+      DATABASE_URL: postgres://filspay:${POSTGRES_PASSWORD}@postgres:5432/filspay?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *node-image
+    restart: unless-stopped
+    command: ["npx", "tsx", "apps/api/src/index.ts"]
+    volumes:
+      - filspay_kyc:/var/lib/filspay/kyc
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: postgres://filspay:${POSTGRES_PASSWORD}@postgres:5432/filspay?sslmode=disable
+      # Postgres is only reachable on the private Docker network, never published.
+      DATABASE_ALLOW_NO_TLS: "true"
+      SETTLEMENT_INTERNAL_URL: http://settlement:8091
+      SETTLEMENT_INTERNAL_TOKEN: ${SETTLEMENT_INTERNAL_TOKEN:?}
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?}
+      ACQUIRER_CALLBACK_SIGNING_SECRET: ${ACQUIRER_CALLBACK_SIGNING_SECRET:?}
+      BROWSER_ORIGINS: https://${APP_HOST:?},https://${ADMIN_HOST:?}
+      CHECKOUT_BASE_URL: https://${APP_HOST}
+      DASHBOARD_URL: https://${APP_HOST}
+      ADMIN_CONSOLE_URL: https://${ADMIN_HOST}
+      # Caddy is one hop in front of the API; without this every visitor would
+      # look like the same IP and the rate limits would trip for everyone.
+      TRUST_PROXY: "1"
+      # KYC identity documents: a persistent private volume, so recreating the container never loses them.
+      KYC_UPLOAD_DIR: /var/lib/filspay/kyc
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      OTP_FROM_EMAIL: ${OTP_FROM_EMAIL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-auto}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  settlement:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.go
+    image: filspay-settlement:latest
+    command: ["daemon"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://filspay:${POSTGRES_PASSWORD}@postgres:5432/filspay?sslmode=disable
+      SETTLEMENT_INTERNAL_TOKEN: ${SETTLEMENT_INTERNAL_TOKEN:?}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  reporting:
+    <<: *node-image
+    restart: unless-stopped
+    command: ["npx", "tsx", "apps/reporting/src/index.ts"]
+    environment:
+      DATABASE_URL: postgres://filspay:${POSTGRES_PASSWORD}@postgres:5432/filspay?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_HOST: ${APP_HOST:?}
+      ADMIN_HOST: ${ADMIN_HOST:?}
+      API_HOST: ${API_HOST:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${WWW_DIR:-/opt/filspay/www}/web:/srv/web:ro
+      - ${WWW_DIR:-/opt/filspay/www}/admin:/srv/admin:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  filspay_kyc:
+  filspay_pgdata:
+  caddy_data:
+  caddy_config:

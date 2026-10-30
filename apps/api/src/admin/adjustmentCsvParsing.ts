@@ -1,11 +1,10 @@
-import { toFils, type Fils } from "@filspay/money";
+import { parseBhdToFils, type Fils } from "@filspay/money";
 import { BadRequestError } from "../lib/errors.js";
-import { parseDecimalMinor } from "../lib/decimal.js";
 
 /** Parses one CSV row's amount column into fils. */
 export function parseAdjustmentAmountFils(raw: string): Fils {
   try {
-    return toFils(parseDecimalMinor(raw), { allowNegative: true });
+    return parseBhdToFils(raw);
   } catch {
     throw new BadRequestError("invalid_amount", `could not parse amount "${raw}"`);
   }
@@ -40,14 +39,17 @@ export function parseAdjustmentCsv(csvContent: string): ParsedAdjustmentCsvRow[]
 
   const rows: ParsedAdjustmentCsvRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const cells = (lines[i] as string).split(",").map((cell) => cell.trim());
+    const rawCells = (lines[i] as string).split(",");
+    const cells = rawCells.map((cell) => cell.trim());
     const merchantId = cells[0] ?? "";
     const amount = cells[1] ?? "";
     if (merchantId === "" || amount === "") {
       throw new BadRequestError("invalid_csv_row", `row ${i} is missing a merchantId or an amount`);
     }
-    const reason = cells[2];
-    rows.push(reason === undefined || reason === "" ? { merchantId, amount } : { merchantId, amount, reason });
+    // The format has no quoting, so commas in a free-text reason belong to it
+    // rather than being silently dropped.
+    const reason = rawCells.slice(2).join(",").trim();
+    rows.push(reason === "" ? { merchantId, amount } : { merchantId, amount, reason });
   }
 
   if (rows.length === 0) {

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { requireRole, requireSession } from "../auth/middleware.js";
 import {
   getKycDocumentFile,
@@ -97,6 +97,7 @@ export async function kycRoutes(app: FastifyInstance): Promise<void> {
         request.params.documentId,
       );
       reply.header("Content-Type", file.mimeType);
+      reply.header("X-Content-Type-Options", "nosniff");
       reply.header("Content-Disposition", `inline; filename="${file.fileName}"`);
       return reply.send(file.buffer);
     },
@@ -114,6 +115,7 @@ export async function kycRoutes(app: FastifyInstance): Promise<void> {
         request.params.documentId,
       );
       reply.header("Content-Type", file.mimeType);
+      reply.header("X-Content-Type-Options", "nosniff");
       reply.header("Content-Disposition", `inline; filename="${file.fileName}"`);
       return reply.send(file.buffer);
     },

@@ -3,7 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { createWebhookEndpoint } from "../../api/webhooks.js";
 import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
-import { dateTime } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type { WebhookEndpointCreateResponse } from "../../types.js";
 
 /**
@@ -19,6 +20,7 @@ import type { WebhookEndpointCreateResponse } from "../../types.js";
 export function WebhookEndpointCreatePage() {
   const { me } = useDashboardAuth();
   const navigate = useNavigate();
+  const { t, formatDateTime } = useI18n();
 
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -55,13 +57,13 @@ export function WebhookEndpointCreatePage() {
   if (created) {
     return (
       <section>
-        <h1>Endpoint created</h1>
+        <h1>{t("Endpoint created")}</h1>
 
         <div className="dash-confirm">
-          <h2>Signing secret — shown once</h2>
+          <h2>{t("Signing secret — shown once")}</h2>
           <p>
-            <strong>This will not be shown again.</strong> Store it now; every delivery
-            to this endpoint is signed with it, and it cannot be re-read or recovered.
+            <strong>{t("This will not be shown again.")}</strong>{" "}
+            {t("Store it now; every delivery to this endpoint is signed with it, and it cannot be re-read or recovered.")}
           </p>
           <p>
             <code className="dash-secret">{created.secret}</code>{" "}
@@ -70,22 +72,22 @@ export function WebhookEndpointCreatePage() {
               className="dash-button"
               onClick={() => void handleCopy(created.secret)}
             >
-              {copied ? "Copied" : "Copy secret"}
+              {copied ? t("Copied") : t("Copy secret")}
             </button>
           </p>
         </div>
 
         <dl className="dash-dl">
-          <dt>URL</dt>
-          <dd>{created.url}</dd>
-          <dt>Secret prefix</dt>
+          <dt>{t("URL")}</dt>
+          <dd dir="ltr">{created.url}</dd>
+          <dt>{t("Secret prefix")}</dt>
           <dd>
             <code>{created.secretPrefix}</code>
           </dd>
-          <dt>Status</dt>
-          <dd>{created.status}</dd>
-          <dt>Created at</dt>
-          <dd>{dateTime(created.createdAt)}</dd>
+          <dt>{t("Status")}</dt>
+          <dd>{label(t, created.status)}</dd>
+          <dt>{t("Created at")}</dt>
+          <dd>{formatDateTime(created.createdAt)}</dd>
         </dl>
 
         <button
@@ -93,7 +95,7 @@ export function WebhookEndpointCreatePage() {
           className="dash-button"
           onClick={() => navigate(`/dashboard/webhooks/${created.id}`, { replace: true })}
         >
-          I&apos;ve saved it — continue
+          {t("I've saved it — continue")}
         </button>
       </section>
     );
@@ -101,13 +103,13 @@ export function WebhookEndpointCreatePage() {
 
   return (
     <section>
-      <h1>New webhook endpoint</h1>
+      <h1>{t("New webhook endpoint")}</h1>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <form className="dash-form" onSubmit={(e) => void handleSubmit(e)}>
         <label>
-          Endpoint URL
+          {t("Endpoint URL")}
           <input
             type="url"
             required
@@ -117,12 +119,12 @@ export function WebhookEndpointCreatePage() {
           />
         </label>
         <button type="submit" className="dash-button" disabled={submitting}>
-          {submitting ? "Creating..." : "Create endpoint"}
+          {submitting ? t("Creating...") : t("Create endpoint")}
         </button>
       </form>
 
       <p>
-        <Link to="/dashboard/webhooks">Back to webhook endpoints</Link>
+        <Link to="/dashboard/webhooks">{t("Back to webhook endpoints")}</Link>
       </p>
     </section>
   );

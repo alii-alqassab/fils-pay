@@ -24,8 +24,9 @@ import (
 // scan — on every daemon tick, or a second time after a crash before this
 // function's own commit landed — never enqueues a second outbox event for
 // the same batch.
-// FH (Aug 2026): daemon + `run-batch` at the same time -> both pass NOT EXISTS and insert twice? claude: "No, outbox_events has a unique index on (event_type, aggregate_id)."
-// MK: fine for now. daemon and CLI never overlap.
+// The NOT EXISTS guard alone is not race-proof (two concurrent scans can both
+// pass it); the settlement_paid_notification_claims primary key (migration
+// 0082) is what serializes concurrent scans per batch.
 func EnqueuePayoutNotifications(ctx context.Context, db *pgxpool.Pool) (int, error) {
 	// Ordered by paid_at so notifications go out in payout order. LIMIT 500
 	// bounds one scan; the next tick picks up whatever is left.
@@ -83,12 +84,38 @@ func EnqueuePayoutNotifications(ctx context.Context, db *pgxpool.Pool) (int, err
 		if err != nil {
 			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: marshal payload: %w", err)
 		}
-		_, err = db.Exec(ctx, `
+		// Claim each batch in the same transaction as the outbox insert. The
+		// unique batch key serializes concurrent daemon/CLI scans even though
+		// both may have selected the same paid batch above.
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: begin batch %s: %w", b.id, err)
+		}
+		claim, err := tx.Exec(ctx, `
+			INSERT INTO settlement_paid_notification_claims (settlement_batch_id)
+			VALUES ($1)
+			ON CONFLICT (settlement_batch_id) DO NOTHING
+		`, b.id)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: claim batch %s: %w", b.id, err)
+		}
+		if claim.RowsAffected() == 0 {
+			if err := tx.Rollback(ctx); err != nil {
+				return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: rollback duplicate batch %s: %w", b.id, err)
+			}
+			continue
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload)
 			VALUES ('settlement.paid', 'settlement_batch', $1, $2)
 		`, b.id, payload)
 		if err != nil {
+			_ = tx.Rollback(ctx)
 			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: insert batch %s: %w", b.id, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: commit batch %s: %w", b.id, err)
 		}
 		count++
 	}

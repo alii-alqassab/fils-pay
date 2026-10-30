@@ -9,6 +9,9 @@ export interface RotatedApiKey extends IssuedApiKey {
   previousKeyId: string;
 }
 
+/** How long a rotated key keeps authenticating after its replacement is issued. */
+export const ROTATION_GRACE_HOURS = 24;
+
 /** Rotates a merchant's API key, atomically with its audit row. */
 export async function rotateApiKeyAsAdmin(
   pool: Pool,
@@ -27,6 +30,15 @@ export async function rotateApiKeyAsAdmin(
     if (row.revoked_at) {
       throw new ConflictError("api_key_already_revoked");
     }
+
+    // Rotation does not cut the old credential off: it keeps working through an
+    // overlap window so the merchant can deploy the new key, then stops
+    // authenticating (verifyApiKey enforces revoke_after on every request).
+    await client.query(
+      `UPDATE api_keys SET revoke_after = now() + make_interval(hours => $3::int)
+        WHERE id = $1 AND merchant_id = $2`,
+      [input.apiKeyId, input.merchantId, ROTATION_GRACE_HOURS],
+    );
 
     const issued = await issueApiKeyInTx(client, config, {
       merchantId: input.merchantId,

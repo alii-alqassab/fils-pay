@@ -144,14 +144,38 @@ async function applyBatchClosed(client: PoolClient, row: OutboxEventRow): Promis
       `SELECT captured_count FROM merchant_daily_volume WHERE merchant_id = $1 AND volume_date = $2`,
       [payload.merchantId, payload.batchDate],
     );
-    const rollup = rollupResult.rows[0] as { captured_count: number };
-    if (rollup.captured_count < groundTruthCount) {
+    // A capture event can commit after this batch-closed event (outbox IDs
+    // are allocated before commit), so the rollup row may not exist yet.
+    // Treat it as zero and let the pass commit; the capture event will fill
+    // the rollup when it becomes visible to the consumer.
+    const rollupCount = Number((rollupResult.rows[0] as { captured_count: number } | undefined)?.captured_count ?? 0);
+    if (rollupCount < groundTruthCount) {
       console.warn(
         `reporting rollup lags ground truth for merchant ${payload.merchantId} on ${payload.batchDate}: ` +
-          `rollup=${rollup.captured_count} ground_truth=${groundTruthCount}`,
+          `rollup=${rollupCount} ground_truth=${groundTruthCount}`,
       );
     }
   }
+}
+
+/**
+ * settlement.paid — refresh the payout trend from the authoritative batch
+ * row after settlement records the disbursement. Re-reading all trend fields
+ * also makes this safe if the closed event has not created the row yet.
+ */
+async function applyBatchPaid(client: PoolClient, row: OutboxEventRow): Promise<void> {
+  await client.query(
+    `INSERT INTO merchant_payout_trends
+        (merchant_id, settlement_batch_id, batch_date, status, gross_fils, fee_fils, net_payout_fils, paid_at, last_updated_at)
+     SELECT merchant_id, id, batch_date, status, gross_fils, fee_fils, net_payout_fils, paid_at, now()
+       FROM settlement_batches
+      WHERE id = $1 AND status = 'paid'
+     ON CONFLICT (merchant_id, settlement_batch_id) DO UPDATE
+       SET status = EXCLUDED.status, gross_fils = EXCLUDED.gross_fils,
+           fee_fils = EXCLUDED.fee_fils, net_payout_fils = EXCLUDED.net_payout_fils,
+           paid_at = EXCLUDED.paid_at, last_updated_at = now()`,
+    [row.aggregate_id],
+  );
 }
 
 
@@ -196,6 +220,8 @@ export async function applyEvent(client: PoolClient, row: OutboxEventRow): Promi
       return applyTransactionVoided(client, row);
     case "settlement.batch_closed":
       return applyBatchClosed(client, row);
+    case "settlement.paid":
+      return applyBatchPaid(client, row);
     default:
       throw new Error(`applyEvent: unhandled event_type ${row.event_type}`);
   }

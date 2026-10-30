@@ -4,6 +4,8 @@ import { listMerchants } from "../../api/merchants.js";
 import { bulkApproveKyc } from "../../api/merchantsBulk.js";
 import { describeError } from "../../api/client.js";
 import { RequireRole } from "../../auth/RequireRole.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type { AdminMerchantSummary, MerchantOnboardingStatus } from "../../types.js";
 
 const ONBOARDING_STATUSES: MerchantOnboardingStatus[] = [
@@ -19,6 +21,7 @@ const PAGE_SIZE = 25;
  *  display name / id / contact email, filterable by onboarding status, and
  *  keyset-paginated like every other list endpoint here. */
 export function MerchantListPage() {
+  const { t, formatDate } = useI18n();
   const [query, setQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
   const [statuses, setStatuses] = useState<MerchantOnboardingStatus[]>([]);
@@ -80,15 +83,14 @@ export function MerchantListPage() {
     );
   }
 
-  // only approves the under_review ones (filtered) — am
-  // FH: sends every selected id, the server doesn't check status
   async function approveSelected(): Promise<void> {
+    if (!window.confirm(`Approve KYC for ${selectedIds.size} selected merchant(s)?`)) return;
     setBulkBusy(true);
     setError(null);
     setBulkNotice(null);
     try {
       const result = await bulkApproveKyc([...selectedIds]);
-      setBulkNotice(`Approved KYC for ${result.approvedCount} merchant(s).`);
+      setBulkNotice(t("Approved KYC for {count} merchant(s).", { count: result.approvedCount }));
       setSelectedIds(new Set());
       await load(null);
     } catch (err) {
@@ -102,7 +104,7 @@ export function MerchantListPage() {
 
   return (
     <section>
-      <h1>Merchants</h1>
+      <h1>{t("Merchants")}</h1>
 
       <form
         className="admin-form admin-form-inline"
@@ -112,19 +114,19 @@ export function MerchantListPage() {
         }}
       >
         <label>
-          Search
+          {t("Search")}
           <input
             type="search"
-            placeholder="Display name, merchant id, or contact email"
+            placeholder={t("Display name, merchant id, or contact email")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
-        <button type="submit">Search</button>
+        <button type="submit">{t("Search")}</button>
       </form>
 
       <fieldset className="admin-filters">
-        <legend>Onboarding status</legend>
+        <legend>{t("Onboarding status")}</legend>
         {ONBOARDING_STATUSES.map((status) => (
           <label key={status}>
             <input
@@ -132,24 +134,24 @@ export function MerchantListPage() {
               checked={statuses.includes(status)}
               onChange={() => toggleStatus(status)}
             />
-            {status}
+            {label(t, status)}
           </label>
         ))}
       </fieldset>
 
-      {error ? <p className="admin-error">{error}</p> : null}
+      {error ? <p className="admin-error">{t(error)}</p> : null}
       {bulkNotice ? <p className="admin-muted">{bulkNotice}</p> : null}
 
       {selectedIds.size > 0 ? (
         <div className="admin-form admin-form-inline">
-          <span>{selectedIds.size} selected</span>
+          <span>{t("{count} selected", { count: selectedIds.size })}</span>
           <RequireRole allow={["finance", "super_admin"]}>
             <button type="button" disabled={bulkBusy} onClick={() => void approveSelected()}>
-              Bulk approve KYC
+              {t("Bulk approve KYC")}
             </button>
           </RequireRole>
           <button type="button" disabled={bulkBusy} onClick={() => setSelectedIds(new Set())}>
-            Clear selection
+            {t("Clear selection")}
           </button>
         </div>
       ) : null}
@@ -160,19 +162,19 @@ export function MerchantListPage() {
             <th>
               <input
                 type="checkbox"
-                aria-label="Select all loaded merchants"
+                aria-label={t("Select all loaded merchants")}
                 checked={allLoadedSelected}
                 disabled={merchants.length === 0}
                 onChange={toggleSelectAllLoaded}
               />
             </th>
-            <th>Merchant</th>
-            <th>Status</th>
-            <th>Onboarding</th>
-            <th>KYC</th>
-            <th>MDR</th>
-            <th>Mode</th>
-            <th>Created</th>
+            <th>{t("Merchant")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Onboarding")}</th>
+            <th>{t("KYC")}</th>
+            <th>{t("MDR")}</th>
+            <th>{t("Mode")}</th>
+            <th>{t("Created")}</th>
           </tr>
         </thead>
         <tbody>
@@ -181,7 +183,7 @@ export function MerchantListPage() {
               <td>
                 <input
                   type="checkbox"
-                  aria-label={`Select ${merchant.displayName}`}
+                  aria-label={t("Select {name}", { name: merchant.displayName })}
                   checked={selectedIds.has(merchant.id)}
                   onChange={() => toggleSelected(merchant.id)}
                 />
@@ -192,27 +194,27 @@ export function MerchantListPage() {
                   <code>{merchant.id}</code>
                 </div>
               </td>
-              <td>{merchant.status}</td>
-              <td>{merchant.onboardingStatus}</td>
-              <td>{merchant.kycPassed ? "passed" : "not passed"}</td>
+              <td>{label(t, merchant.status)}</td>
+              <td>{label(t, merchant.onboardingStatus)}</td>
+              <td>{merchant.kycPassed ? t("passed") : t("not passed")}</td>
               <td>{(merchant.mdrBps / 100).toFixed(2)}%</td>
-              <td>{merchant.testMode ? "test" : "live"}</td>
-              <td>{new Date(merchant.createdAt).toLocaleDateString()}</td>
+              <td>{merchant.testMode ? t("test") : t("live")}</td>
+              <td>{formatDate(merchant.createdAt)}</td>
             </tr>
           ))}
           {merchants.length === 0 && !loading ? (
             <tr>
-              <td colSpan={8}>No merchants match this search.</td>
+              <td colSpan={8}>{t("No merchants match this search.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
-      {loading ? <p>Loading...</p> : null}
+      {loading ? <p>{t("Loading...")}</p> : null}
 
       {nextCursor ? (
         <button type="button" disabled={loading} onClick={() => void load(nextCursor)}>
-          Load more
+          {t("Load more")}
         </button>
       ) : null}
     </section>

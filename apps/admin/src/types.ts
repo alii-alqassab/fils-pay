@@ -20,13 +20,13 @@ export interface ApiErrorBody {
 // Admin auth
 // ---------------------------------------------------------------------------
 
-export type AdminRole = "support" | "finance" | "super_admin";
+export type AdminRole = "support" | "finance" | "super_admin" | "master";
 
 /** `POST /v1/admin/auth/login` → `200 { otpRequired: true, otpExpiresAt, devOtpCode? }`. */
 export interface AdminLoginResponse {
   otpRequired: boolean;
   otpExpiresAt: string;
-  /** Dev-only convenience, gated server-side the same way merchant login gates it. */
+  /** Present only when the server runs with OTP_DELIVERY=log / in tests; real deployments email the code and omit this. */
   devOtpCode?: string;
 }
 
@@ -93,6 +93,14 @@ export interface KycReview {
   reviewerAdminUserId: string | null;
   notes: string | null;
   reviewedAt: string;
+}
+
+export interface KycDocumentSummary {
+  id: string;
+  documentType: string;
+  fileName: string;
+  mimeType: string;
+  uploadedAt: string;
 }
 
 /** `listApiKeys`'s `ApiKeySummary` (apps/api `apiKeys/issue.ts`), JSON-serialized. */
@@ -381,4 +389,45 @@ export interface AdjustmentImportRowDetail {
   parsedAmountFils: number;
   reason: string | null;
   ledgerEntryGroupId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Admin accounts (master only)
+// ---------------------------------------------------------------------------
+
+/** Roles the master can hand out. `master` is never assignable. */
+export type AssignableAdminRole = "support" | "finance" | "super_admin";
+
+/** One row of `GET /v1/admin/admins` (never carries a password hash). */
+export interface AdminAccount {
+  id: string;
+  email: string;
+  displayName: string;
+  role: AdminRole;
+  status: "active" | "disabled";
+  createdAt: string;
+}
+
+/** A pending invitation or password reset. The token is never returned. */
+export interface AdminInvite {
+  id: string;
+  email: string;
+  displayName: string;
+  role: string;
+  purpose: "invite" | "reset";
+  expiresAt: string;
+  createdAt: string;
+  status: "open" | "expired";
+}
+
+export interface AdminAccountsResponse {
+  admins: AdminAccount[];
+  invites: AdminInvite[];
+}
+
+/** `POST /v1/admin/auth/accept-invite` (public) -> `200`. */
+export interface AcceptInviteResult {
+  ok: boolean;
+  email: string;
+  purpose: "invite" | "reset";
 }

@@ -79,13 +79,20 @@ export async function endImpersonation(
 export type ImpersonationMerchantRole = "owner" | "finance" | "support";
 
 /** `admin_users.role` (migration 0031). */
-type AdminUserRole = "support" | "finance" | "super_admin";
+type AdminUserRole = "support" | "finance" | "super_admin" | "master";
 
-/** Maps the admin's role to the merchant-plane role used during impersonation. */
+/**
+ * Maps the admin's role to the merchant-plane role used during impersonation.
+ * Every admin role resolves to "support" (ARCH section 8, HANDOVER, ADMIN.md): a grant is
+ * view-only and must never widen what the viewing admin can read.
+ */
 const MERCHANT_ROLE_FOR_ADMIN_ROLE: Record<AdminUserRole, ImpersonationMerchantRole> = {
   support: "support",
-  finance: "finance",
-  super_admin: "owner",
+  finance: "support",
+  super_admin: "support",
+  // The master admin is a normal admin role too: without this entry a master-created grant resolved
+  // to an undefined merchant role instead of view-only "support".
+  master: "support",
 };
 
 /** @property merchantRole Always "support" (ARCH §8): a grant is view-only. */
@@ -101,8 +108,8 @@ export interface ImpersonationGrantLookup {
  * called only from `requireMerchantAuth`. Same predicate discipline as every
  * other session-shaped lookup here: never a bare token match.
  */
-// no admin_users.status check here (adminAuth/sessions.ts has one) — disabled admin keeps their grant? — am
-// FH: revoked_at gets set by the admin-disable trigger, so it's covered
+// Re-check the issuing admin's status on every use, just like admin sessions.
+// Grants are separate credentials and must stop working when their admin is disabled.
 export async function lookupImpersonationGrant(
   pool: Pool,
   rawToken: string,
@@ -118,6 +125,7 @@ export async function lookupImpersonationGrant(
        FROM admin_impersonation_grants g
        JOIN admin_users au ON au.id = g.admin_user_id
       WHERE g.token_hash = $1
+        AND au.status = 'active'
         AND g.revoked_at IS NULL
         AND g.ended_at IS NULL
         AND g.expires_at > now()`,

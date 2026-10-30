@@ -6,7 +6,12 @@ import type {
   KycReviewResult,
   MerchantOnboardingStatus,
   RecomputeStatusesResult,
+  KycDocumentSummary,
 } from "../types.js";
+
+export function listMerchantKycDocuments(merchantId: string): Promise<KycDocumentSummary[]> {
+  return request(`/v1/admin/merchants/${encodeURIComponent(merchantId)}/kyc/documents`);
+}
 
 export interface ListMerchantsQuery {
   /** Matches `display_name ILIKE`, or an exact `id` /

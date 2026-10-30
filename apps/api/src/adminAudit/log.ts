@@ -19,7 +19,18 @@ export type AdminAuditAction =
   | "balance_adjustment"
   | "balance_adjustment_journaled"
   | "mdr_recalculation"
-  | "adjustment_import_applied";
+  | "adjustment_import_applied"
+  | "master_created"
+  | "master_password_reset"
+  | "admin_invite_created"
+  | "admin_invite_resent"
+  | "admin_invite_revoked"
+  | "admin_invite_redeemed"
+  | "admin_updated"
+  | "admin_reset_sent"
+  | "staff_approved"
+  | "staff_rejected"
+  | "staff_updated";
 
 export type AdminAuditTargetType =
   | "merchant"
@@ -28,6 +39,9 @@ export type AdminAuditTargetType =
   | "settlement_batch"
   | "credit_request"
   | "adjustment_import"
+  | "admin_user"
+  | "admin_invite"
+  | "merchant_user"
   | "platform";
 
 export interface AdminAuditEntry {

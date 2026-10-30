@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import type { Config } from "../config.js";
 import { BadRequestError } from "../lib/errors.js";
-import { validateWebhookUrl } from "./create.js";
+import { assertWebhookHostResolvesPublic, validateWebhookUrl } from "./create.js";
 import type { WebhookEndpointSummary } from "./list.js";
 
 export interface UpdateWebhookEndpointInput {
@@ -31,12 +31,14 @@ export async function updateWebhookEndpoint(
   pool: Pool,
   config: Pick<Config, "nodeEnv">,
   input: UpdateWebhookEndpointInput,
+  resolve?: (hostname: string) => Promise<string[]>,
 ): Promise<WebhookEndpointSummary | null> {
   if (input.url === undefined && input.status === undefined) {
     throw new BadRequestError("invalid_request", "at least one of url or status is required");
   }
   if (input.url !== undefined) {
     validateWebhookUrl(input.url, config);
+    await assertWebhookHostResolvesPublic(input.url, config, resolve);
   }
 
   const result = await pool.query<WebhookEndpointRow>(
@@ -45,6 +47,7 @@ export async function updateWebhookEndpoint(
             status = COALESCE($4, status),
             updated_at = now()
       WHERE id = $1 AND merchant_id = $2
+        AND deleted_at IS NULL
       RETURNING id, url, secret_prefix, status, created_at, updated_at`,
     [input.id, input.merchantId, input.url ?? null, input.status ?? null],
   );

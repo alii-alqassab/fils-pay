@@ -1,6 +1,15 @@
 import type { ApiErrorBody } from "../types.js";
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:3000";
+/**
+ * Without an explicit VITE_API_BASE_URL the API is assumed to run on port 3000
+ * of the same host the page was opened on. The session cookie is
+ * SameSite=Lax, so a page on 127.0.0.1 calling localhost:3000 is cross-site
+ * and the browser drops the login cookie (the OTP step then fails with
+ * no_pending_session).
+ */
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  `http://${typeof window !== "undefined" ? window.location.hostname : "localhost"}:3000`;
 
 /** Mirrors apps/api's own uniform `{ error, message? }` body
  *  (lib/errors.ts / plugins/errorHandler.ts) — one error shape end to

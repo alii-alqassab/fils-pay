@@ -140,10 +140,8 @@ export async function webhookEndpointRoutes(app: FastifyInstance): Promise<void>
   );
 
   app.post<{ Params: EndpointIdParams }>(
-    // MK: test-send echoes up to 2KB of whatever the receiver returns. point an endpoint at
-    // http://settlement:8091 and you can read internal responses?
-    // am: only the merchant who owns the endpoint sees it. harmless
-    // MK: and create.ts blocks private hosts in production anyway
+    // Test sends include the receiver's status and bounded response excerpt.
+    // Private network targets are permitted only outside production.
     "/:merchantId/webhook-endpoints/:id/test",
     { preHandler: [requireMerchantAuth, requireMerchantRole("owner", "finance")] },
     async (request, reply) => {

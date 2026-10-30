@@ -1,3 +1,5 @@
+import { useI18n } from "../i18n/I18nProvider.js";
+
 /**
  * Renders the `readModelAsOf`/`live` pair every analytics response carries.
  * Staleness in this platform is a disclosed property, not a
@@ -20,19 +22,20 @@ export function StalenessBadge({
   readModelAsOf: string | null;
   live: boolean;
 }) {
+  const { t, formatTime } = useI18n();
   if (live) {
-    return <span className="dash-badge dash-badge-live">Live · computed just now</span>;
+    return <span className="dash-badge dash-badge-live">{t("Live · computed just now")}</span>;
   }
   if (!readModelAsOf) {
     return (
       <span className="dash-badge dash-badge-stale">
-        No data yet — the reporting worker has not completed a pass
+        {t("No data yet — the reporting worker has not completed a pass")}
       </span>
     );
   }
   return (
     <span className="dash-badge dash-badge-stale">
-      Data as of {new Date(readModelAsOf).toLocaleTimeString()}
+      {t("Data as of")} {formatTime(readModelAsOf)}
     </span>
   );
 }

@@ -11,18 +11,19 @@ import type {
  * different tables, different role enum. Nothing here touches the admin
  * plane.
  *
- * `login` requires an explicit `merchantId` because merchant_users.email is
- * unique *per merchant*, not globally, so an email alone cannot identify a
- * user. A success here only creates a *pending* session; nothing is
+ * `login` normally identifies an account from email and password. A business
+ * merchant choice can disambiguate users on multiple merchant accounts.
+ * A success here only creates a *pending* session; nothing is
  * authenticated until `verifyOtp`.
  */
 /** Step 1 of 2. The session is pending until verifyOtp succeeds. */
 export function login(input: {
-  merchantId: string;
+  merchantId?: string;
+  registrationNumber?: string;
   email: string;
   password: string;
 }): Promise<DashboardLoginResponse> {
-  return request("/v1/auth/login", { method: "POST", body: JSON.stringify(input) });
+  return request("/v1/auth/email-login", { method: "POST", body: JSON.stringify(input) });
 }
 
 // MK: devOtpCode only shows up when NODE_ENV != production

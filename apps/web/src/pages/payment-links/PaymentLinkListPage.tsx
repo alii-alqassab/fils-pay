@@ -5,7 +5,9 @@ import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { RequireRole } from "../../auth/RequireRole.js";
 import { Pagination } from "../../components/Pagination.js";
-import { bhd, dash, dateTime } from "../../format.js";
+import { bhd, dash } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type { PaymentLinkDto, PaymentLinkStatus } from "../../types.js";
 
 /** The four *stored* statuses, including `reserved` — the merchant-facing
@@ -23,6 +25,7 @@ const PAGE_SIZE = 25;
 export function PaymentLinkListPage() {
   const { me } = useDashboardAuth();
   const merchantId = me?.merchant.id;
+  const { t, formatDateTime } = useI18n();
 
   const [statuses, setStatuses] = useState<PaymentLinkStatus[]>([]);
   const [links, setLinks] = useState<PaymentLinkDto[]>([]);
@@ -64,18 +67,18 @@ export function PaymentLinkListPage() {
 
   return (
     <section>
-      <h1>Payment links</h1>
+      <h1>{t("Payment links")}</h1>
 
       <RequireRole allow={["owner", "finance"]}>
         <p>
           <Link className="dash-button-link" to="/dashboard/payment-links/new">
-            New payment link
+            {t("New payment link")}
           </Link>
         </p>
       </RequireRole>
 
       <fieldset className="dash-filters">
-        <legend>Status</legend>
+        <legend>{t("Status")}</legend>
         {STATUSES.map((status) => (
           <label key={status}>
             <input
@@ -83,23 +86,23 @@ export function PaymentLinkListPage() {
               checked={statuses.includes(status)}
               onChange={() => toggleStatus(status)}
             />
-            {status}
+            {label(t, status)}
           </label>
         ))}
       </fieldset>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Reference</th>
-            <th>Description</th>
-            <th>Amount</th>
-            <th>Status</th>
-            <th>Expires</th>
-            <th>Paid</th>
-            <th>Canceled</th>
+            <th>{t("Reference")}</th>
+            <th>{t("Description")}</th>
+            <th>{t("Amount")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Expires")}</th>
+            <th>{t("Paid")}</th>
+            <th>{t("Canceled")}</th>
           </tr>
         </thead>
         <tbody>
@@ -111,22 +114,22 @@ export function PaymentLinkListPage() {
               <td>{dash(link.description)}</td>
               <td>{bhd(link.amountFils)}</td>
               <td>
-                <span className={`dash-status dash-status-${link.status}`}>{link.status}</span>
+                <span className={`dash-status dash-status-${link.status}`}>{label(t, link.status)}</span>
               </td>
-              <td>{dateTime(link.expiresAt)}</td>
-              <td>{dateTime(link.paidAt)}</td>
-              <td>{dateTime(link.canceledAt)}</td>
+              <td>{formatDateTime(link.expiresAt)}</td>
+              <td>{formatDateTime(link.paidAt)}</td>
+              <td>{formatDateTime(link.canceledAt)}</td>
             </tr>
           ))}
           {links.length === 0 && !loading ? (
             <tr>
-              <td colSpan={7}>No payment links match these filters.</td>
+              <td colSpan={7}>{t("No payment links match these filters.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
-      {loading ? <p>Loading...</p> : null}
+      {loading ? <p>{t("Loading...")}</p> : null}
 
       <Pagination nextCursor={nextCursor} loading={loading} onLoadMore={() => void load(nextCursor)} />
     </section>

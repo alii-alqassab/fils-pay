@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { getMerchant, listMerchants } from "../../api/merchants.js";
 import { replayBatch } from "../../api/webhooks.js";
 import { describeError } from "../../api/client.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type {
   AdminMerchantDetail,
   AdminMerchantSummary,
@@ -40,6 +42,7 @@ function defaultRange(): { from: string; to: string } {
 export function WebhookReplayPage() {
   const { merchantId } = useParams<{ merchantId?: string }>();
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   const [search, setSearch] = useState("");
   const [candidates, setCandidates] = useState<AdminMerchantSummary[]>([]);
@@ -115,20 +118,20 @@ export function WebhookReplayPage() {
   if (!merchantId) {
     return (
       <section>
-        <h1>Webhook replay</h1>
-        <p className="admin-muted">Pick the merchant whose endpoint needs a replay.</p>
-        {error ? <p className="admin-error">{error}</p> : null}
+        <h1>{t("Webhook replay")}</h1>
+        <p className="admin-muted">{t("Pick the merchant whose endpoint needs a replay.")}</p>
+        {error ? <p className="admin-error">{t(error)}</p> : null}
         <form className="admin-form admin-form-inline" onSubmit={(e) => void handleSearch(e)}>
           <label>
-            Search merchants
+            {t("Search merchants")}
             <input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Display name, merchant id, or contact email"
+              placeholder={t("Display name, merchant id, or contact email")}
             />
           </label>
-          <button type="submit">Search</button>
+          <button type="submit">{t("Search")}</button>
         </form>
         <ul>
           {candidates.map((merchant) => (
@@ -149,11 +152,11 @@ export function WebhookReplayPage() {
   return (
     <section>
       <p>
-        <Link to="/webhooks">&larr; Pick a different merchant</Link>
+        <Link to="/webhooks">{t("← Pick a different merchant")}</Link>
       </p>
-      <h1>Webhook replay</h1>
+      <h1>{t("Webhook replay")}</h1>
       <p>
-        Merchant:{" "}
+        {t("Merchant:")}{" "}
         {detail ? (
           <Link to={`/merchants/${merchantId}`}>{detail.merchant.displayName}</Link>
         ) : (
@@ -161,28 +164,28 @@ export function WebhookReplayPage() {
         )}
       </p>
 
-      {error ? <p className="admin-error">{error}</p> : null}
+      {error ? <p className="admin-error">{t(error)}</p> : null}
 
       {detail && endpoints.length === 0 ? (
-        <p className="admin-muted">This merchant has no webhook endpoints registered.</p>
+        <p className="admin-muted">{t("This merchant has no webhook endpoints registered.")}</p>
       ) : null}
 
       <form className="admin-form" onSubmit={(e) => void handleReplay(e)}>
         <label>
-          Endpoint
+          {t("Endpoint")}
           <select value={endpointId} onChange={(e) => setEndpointId(e.target.value)} required>
             <option value="" disabled>
-              Select an endpoint
+              {t("Select an endpoint")}
             </option>
             {endpoints.map((endpoint) => (
               <option key={endpoint.id} value={endpoint.id}>
-                {endpoint.url} ({endpoint.status})
+                {endpoint.url} ({label(t, endpoint.status)})
               </option>
             ))}
           </select>
         </label>
         <label>
-          From
+          {t("From")}
           <input
             type="datetime-local"
             required
@@ -191,7 +194,7 @@ export function WebhookReplayPage() {
           />
         </label>
         <label>
-          To
+          {t("To")}
           <input
             type="datetime-local"
             required
@@ -200,7 +203,7 @@ export function WebhookReplayPage() {
           />
         </label>
         <fieldset className="admin-filters">
-          <legend>Delivery statuses to replay</legend>
+          <legend>{t("Delivery statuses to replay")}</legend>
           {REPLAYABLE_STATUSES.map((status) => (
             <label key={status}>
               <input
@@ -208,27 +211,25 @@ export function WebhookReplayPage() {
                 checked={statuses.includes(status)}
                 onChange={() => toggleStatus(status)}
               />
-              {status}
+              {label(t, status)}
             </label>
           ))}
           <p className="admin-muted">
-            Defaults to <code>exhausted</code> — the one terminal failure state the dispatcher
-            produces. Replaying a <code>succeeded</code> delivery is allowed but resends an event the
-            receiver already accepted.
+            {t("Defaults to exhausted — the one terminal failure state the dispatcher produces. Replaying a succeeded delivery is allowed but resends an event the receiver already accepted.")}
           </p>
         </fieldset>
         <button type="submit" disabled={busy || !endpointId}>
-          {busy ? "Replaying..." : "Replay batch"}
+          {busy ? t("Replaying...") : t("Replay batch")}
         </button>
       </form>
 
       {result ? (
         <div className="admin-notice">
           <p>
-            Matched {result.matchedCount} deliver{result.matchedCount === 1 ? "y" : "ies"}; queued{" "}
-            {(result.replayedDeliveryIds ?? []).length} replay
-            {(result.replayedDeliveryIds ?? []).length === 1 ? "" : "s"}. They are sent by the normal
-            async dispatcher pass, not immediately by this request.
+            {t("Deliveries matched: {matched}. Replays queued: {queued}. They are sent by the normal async dispatcher pass, not immediately by this request.", {
+              matched: result.matchedCount,
+              queued: (result.replayedDeliveryIds ?? []).length,
+            })}
           </p>
           {(result.replayedDeliveryIds ?? []).length > 0 ? (
             <ul className="admin-id-list">

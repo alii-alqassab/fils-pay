@@ -5,11 +5,9 @@ package ledger
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/filspay/settlement/internal/money"
@@ -86,15 +84,25 @@ func RebuildAllBalances(ctx context.Context, db *pgxpool.Pool) (map[uuid.UUID]Re
 	}
 	rows.Close()
 
-	// TODO: lock merchant_balances rows first, a concurrent CloseBatch increment gets clobbered -- YA
 	diffs := make(map[uuid.UUID]RebuildDiff, len(merchantIDs))
 
 	for _, merchantID := range merchantIDs {
+		// Take the row lock before reading anything, so a concurrent
+		// balance change either lands before our read or waits for commit.
+		_, err := tx.Exec(ctx, `
+			INSERT INTO merchant_balances (merchant_id, cached_payable_fils, updated_at)
+			VALUES ($1, 0, now())
+			ON CONFLICT (merchant_id) DO NOTHING
+		`, merchantID)
+		if err != nil {
+			return nil, fmt.Errorf("ledger: RebuildAllBalances: ensure balance row for %s: %w", merchantID, err)
+		}
+
 		var cachedBefore int64
-		err := tx.QueryRow(ctx, `
-			SELECT COALESCE(cached_payable_fils, 0) FROM merchant_balances WHERE merchant_id = $1
+		err = tx.QueryRow(ctx, `
+			SELECT cached_payable_fils FROM merchant_balances WHERE merchant_id = $1 FOR UPDATE
 		`, merchantID).Scan(&cachedBefore)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err != nil {
 			return nil, fmt.Errorf("ledger: RebuildAllBalances: read cached balance for %s: %w", merchantID, err)
 		}
 

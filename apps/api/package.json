@@ -10,23 +10,25 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@filspay/events": "*",
-    "@filspay/money": "*",
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^10.1.1",
+    "@filspay/events": "*",
+    "@filspay/money": "*",
     "argon2": "^0.45.1",
     "chalk": "^4.1.2",
     "dotenv": "^16.4.5",
     "fastify": "^5.12.3",
     "fastify-plugin": "^6.0.0",
     "lodash": "^4.17.21",
+    "nodemailer": "^10.3.1",
     "pg": "^8.13.1",
-    "sharp": "^0.33.5"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.11.6",
-    "typescript": "^5.6.3",
-    "tsx": "^4.19.1"
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
   }
 }

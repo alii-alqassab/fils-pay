@@ -1,8 +1,9 @@
 import type { Pool } from "pg";
-import { addFils, toFils, ZERO_FILS, type Fils } from "@filspay/money";
+import { createHash } from "node:crypto";
+import { addFils, ZERO_FILS, type Fils } from "@filspay/money";
 import { insertAdminAuditLog } from "../adminAudit/log.js";
 import { withTransaction } from "../db/withTransaction.js";
-import { BadRequestError } from "../lib/errors.js";
+import { BadRequestError, ConflictError } from "../lib/errors.js";
 import { parseAdjustmentAmountFils } from "./adjustmentCsvParsing.js";
 import { postLedgerAdjustment } from "./ledgerAdjustments.js";
 
@@ -51,17 +52,28 @@ export async function applyAdjustmentImport(
     throw new BadRequestError("empty_import", "the CSV must contain at least one row");
   }
 
+  // The filename is informational and can change on a retry. Hash the parsed
+  // row content instead so the database can enforce one application per CSV,
+  // including concurrent requests handled by different API replicas.
+  const contentHash = createHash("sha256")
+    .update(JSON.stringify(input.rows.map((row) => [row.merchantId, row.amount, row.reason ?? null])))
+    .digest("hex");
+
   return withTransaction(pool, async (client) => {
     const importRow = await client.query<{ id: string }>(
-      `INSERT INTO adjustment_imports (uploaded_by_admin_user_id, original_filename, row_count)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [input.adminUserId, input.originalFilename, input.rows.length],
+      `INSERT INTO adjustment_imports
+         (uploaded_by_admin_user_id, original_filename, row_count, content_hash)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [input.adminUserId, input.originalFilename, input.rows.length, contentHash],
     );
+    if (importRow.rows.length === 0) {
+      throw new ConflictError("adjustment_import_already_applied", "this adjustment CSV has already been applied");
+    }
     const importId = importRow.rows[0]!.id;
 
     let total = ZERO_FILS;
-    // FH: claude says nothing here stops the same CSV being applied twice. intended? (asked in #fp-backend 14/8, no answer)
-    // re-upload is blocked by the unique original_filename i think — am
     for (let i = 0; i < input.rows.length; i++) {
       const row = input.rows[i]!;
       const amountFils = parseAdjustmentAmountFils(row.amount);

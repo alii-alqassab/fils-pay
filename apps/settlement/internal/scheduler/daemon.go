@@ -61,6 +61,21 @@ func Run(ctx context.Context, db *pgxpool.Pool, cfg config.Config) {
 	}
 }
 
+// dueBusinessDate reports the completed business day to close at instant now
+// and whether the run delay after Bahrain midnight has elapsed. now is
+// converted to Asia/Bahrain first: passing the UTC instant straight to
+// BusinessDayWindow would use the UTC calendar date, which between 21:00 and
+// 24:00 UTC is still the previous Bahrain day, so the delay check was always
+// satisfied and the close ran up to 3h late/early relative to intent.
+func dueBusinessDate(now time.Time, runDelayMinutes int) (time.Time, bool) {
+	todayStart := settlement.BusinessDayStartAt(now)
+	dueAt := todayStart.Add(time.Duration(runDelayMinutes) * time.Minute)
+	if now.Before(dueAt) {
+		return time.Time{}, false
+	}
+	return todayStart.AddDate(0, 0, -1), true
+}
+
 // runIfDue takes the business date from the Asia/Bahrain calendar date of
 // now, so the daily close starts DaemonRunDelayMinutes after Bahrain midnight.
 func runIfDue(ctx context.Context, db *pgxpool.Pool, runDelayMinutes int) {
@@ -75,26 +90,25 @@ func runIfDue(ctx context.Context, db *pgxpool.Pool, runDelayMinutes int) {
 	// current UTC calendar day is already past today's Bahrain midnight),
 	// which would make this check permanently unable to hold a run back to
 	// let last-minute transactions settle.
-	// MK: UTC here is fine, BusinessDayWindow converts to Bahrain.
-	// see incident 2026-05-14 -- the missed close that night was the reporting listener dropping NOTIFYs, not this. -- FH
 	now := time.Now().UTC()
-	todayStart, _ := settlement.BusinessDayWindow(now)
-	dueAt := todayStart.Add(time.Duration(runDelayMinutes) * time.Minute)
-	if now.Before(dueAt) {
+	businessDate, due := dueBusinessDate(now, runDelayMinutes)
+	if !due {
 		// The grace period after today's Bahrain midnight hasn't elapsed
 		// yet; nothing new to do this tick.
 		logNextRunEstimate(now)
 		return
 	}
-	// am: logs show the close ~03:15 local not 00:15?? whatever, it runs. yalla
-	businessDate := todayStart.AddDate(0, 0, -1)
 
+	// RunDailyBatch settles each merchant independently and reports failures
+	// at the end. Merchants that did settle are already paid, so their
+	// notifications must not wait for a fully clean run: a merchant that
+	// keeps failing would otherwise hold back everyone's settlement.paid.
 	report, err := settlement.RunDailyBatch(ctx, db, businessDate, nil)
 	if err != nil {
-		log.Printf("settlement daemon: RunDailyBatch(%s) failed: %v", businessDate.Format("2006-01-02"), err)
-		return
+		log.Printf("settlement daemon: RunDailyBatch(%s) finished with errors: %v", businessDate.Format("2006-01-02"), err)
+	} else {
+		log.Printf("settlement daemon: RunDailyBatch(%s) processed %d merchant(s)", businessDate.Format("2006-01-02"), len(report.MerchantResults))
 	}
-	log.Printf("settlement daemon: RunDailyBatch(%s) processed %d merchant(s)", businessDate.Format("2006-01-02"), len(report.MerchantResults))
 
 	// Merchant-facing payout notifications for every batch that has reached
 	// 'paid', whichever payout path got it there. Its own NOT EXISTS guard

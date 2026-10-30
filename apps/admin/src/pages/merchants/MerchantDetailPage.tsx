@@ -1,33 +1,35 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { formatBhd, parseBhdToFils, toFils } from "@filspay/money";
-import { getMerchant, recomputeTransactionStatuses, submitKycReview } from "../../api/merchants.js";
+import { getMerchant, listMerchantKycDocuments, recomputeTransactionStatuses, submitKycReview } from "../../api/merchants.js";
 import { adjustBalance } from "../../api/balanceAdjustments.js";
 import { issueCredit } from "../../api/credits.js";
 import { rotateApiKey } from "../../api/apiKeys.js";
 import { startImpersonation } from "../../api/impersonation.js";
-import { describeError, WEB_BASE_URL } from "../../api/client.js";
+import { API_BASE_URL, describeError, WEB_BASE_URL } from "../../api/client.js";
+import { bahrainDate } from "../../dates.js";
 import { useAdminAuth } from "../../auth/AdminAuthContext.js";
 import { RequireRole } from "../../auth/RequireRole.js";
-import type { AdminMerchantDetail, CreditReasonCode, RotatedApiKey } from "../../types.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
+import type { AdminMerchantDetail, CreditReasonCode, KycDocumentSummary, RotatedApiKey } from "../../types.js";
 
 function bhd(fils: number): string {
   return `${formatBhd(toFils(fils, { allowNegative: true }))} BHD`;
 }
 
-// browser local date not bahrain, fine for bahrain staff — am
+// Today's Asia/Bahrain business date, regardless of the browser's timezone.
 function todayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate(),
-  ).padStart(2, "0")}`;
+  return bahrainDate(0);
 }
 
 export function MerchantDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { rememberImpersonation } = useAdminAuth();
+  const { admin, rememberImpersonation } = useAdminAuth();
+  const { t, formatDate, formatDateTime } = useI18n();
 
   const [detail, setDetail] = useState<AdminMerchantDetail | null>(null);
+  const [kycDocuments, setKycDocuments] = useState<KycDocumentSummary[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -57,10 +59,13 @@ export function MerchantDetailPage() {
     setLoadError(null);
     try {
       setDetail(await getMerchant(id));
+      if (admin?.role === "finance" || admin?.role === "super_admin" || admin?.role === "master") {
+        setKycDocuments(await listMerchantKycDocuments(id));
+      }
     } catch (err) {
       setLoadError(describeError(err));
     }
-  }, [id]);
+  }, [id, admin?.role]);
 
   useEffect(() => {
     void load();
@@ -77,9 +82,11 @@ export function MerchantDetailPage() {
         notes: kycNotes.trim() ? kycNotes.trim() : undefined,
       });
       setNotice(
-        `KYC ${outcome}. Onboarding status is now ${result.onboardingStatus} (kycPassed: ${String(
-          result.kycPassed,
-        )}).`,
+        t("KYC {outcome}. Onboarding status is now {status} (KYC passed: {passed}).", {
+          outcome: label(t, outcome),
+          status: label(t, result.onboardingStatus),
+          passed: result.kycPassed ? t("yes") : t("no"),
+        }),
       );
       setKycNotes("");
       await load();
@@ -115,9 +122,12 @@ export function MerchantDetailPage() {
   // MK: it's the journaled one since Sep
   async function handleAdjustBalance(): Promise<void> {
     if (!id) return;
-    const deltaFils = Number(adjustDeltaFils.trim());
-    if (!Number.isInteger(deltaFils) || deltaFils === 0) {
-      setActionError("Enter a non-zero whole number of fils.");
+    const deltaText = adjustDeltaFils.trim();
+    // Digits only (optional leading minus): Number() alone would accept
+    // "1e3", "0x10" or " " and turn them into a ledger amount.
+    const deltaFils = /^-?\d+$/.test(deltaText) ? Number(deltaText) : Number.NaN;
+    if (!Number.isSafeInteger(deltaFils) || deltaFils === 0) {
+      setActionError(t("Enter a non-zero whole number of fils."));
       return;
     }
     setBusy(true);
@@ -126,9 +136,11 @@ export function MerchantDetailPage() {
     try {
       const result = await adjustBalance(id, { deltaFils, reason: adjustReason.trim() });
       setNotice(
-        `Balance adjusted by ${bhd(result.deltaFils)}: ${bhd(
-          result.cachedPayableFilsBefore,
-        )} → ${bhd(result.cachedPayableFilsAfter)}.`,
+        t("Balance adjusted by {delta}: {before} → {after}.", {
+          delta: bhd(result.deltaFils),
+          before: bhd(result.cachedPayableFilsBefore),
+          after: bhd(result.cachedPayableFilsAfter),
+        }),
       );
       setAdjustDeltaFils("");
       setAdjustReason("");
@@ -149,7 +161,7 @@ export function MerchantDetailPage() {
     try {
       // BD in, integer fils out, via the platform's own string-based parser —
       // never parseFloat, which cannot represent the third decimal exactly.
-      const baseAmountFils = parseBhdToFils(creditAmountBhd);
+      const baseAmountFils = parseBhdToFils(creditAmountBhd.trim());
       const record = await issueCredit(id, {
         baseAmountFils,
         reasonCode: creditReason,
@@ -159,10 +171,13 @@ export function MerchantDetailPage() {
       });
       setNotice(
         record.status === "posted"
-          ? `Credit of ${bhd(record.postedAmountFils)} posted to the ledger (entry group ${
-              record.ledgerEntryGroupId ?? "unknown"
-            }).`
-          : `Credit of ${bhd(record.postedAmountFils)} raised and awaiting a second approver — see Credits.`,
+          ? t("Credit of {amount} posted to the ledger (entry group {group}).", {
+              amount: bhd(record.postedAmountFils),
+              group: record.ledgerEntryGroupId ?? t("unknown"),
+            })
+          : t("Credit of {amount} raised and awaiting a second approver — see Credits.", {
+              amount: bhd(record.postedAmountFils),
+            }),
       );
       setCreditAmountBhd("");
       setCreditMemo("");
@@ -183,8 +198,10 @@ export function MerchantDetailPage() {
     try {
       const result = await recomputeTransactionStatuses(id);
       setNotice(
-        `Scanned ${result.scanned} transaction${result.scanned === 1 ? "" : "s"}; ` +
-          `${result.updated} status${result.updated === 1 ? "" : "es"} updated.`,
+        t("Transactions scanned: {scanned}. Statuses updated: {updated}.", {
+          scanned: result.scanned,
+          updated: result.updated,
+        }),
       );
       await load();
     } catch (err) {
@@ -222,14 +239,14 @@ export function MerchantDetailPage() {
   if (loadError) {
     return (
       <section>
-        <p className="admin-error">{loadError}</p>
-        <Link to="/merchants">Back to merchants</Link>
+        <p className="admin-error">{t(loadError)}</p>
+        <Link to="/merchants">{t("Back to merchants")}</Link>
       </section>
     );
   }
 
   if (!detail) {
-    return <p>Loading merchant...</p>;
+    return <p>{t("Loading merchant...")}</p>;
   }
 
   const { merchant } = detail;
@@ -242,51 +259,55 @@ export function MerchantDetailPage() {
   return (
     <section>
       <p>
-        <Link to="/merchants">&larr; Merchants</Link>
+        <Link to="/merchants">{t("← Merchants")}</Link>
       </p>
       <h1>{merchant.displayName}</h1>
       <p className="admin-muted">
         <code>{merchant.id}</code>
       </p>
 
-      {actionError ? <p className="admin-error">{actionError}</p> : null}
+      {actionError ? <p className="admin-error">{t(actionError)}</p> : null}
       {notice ? <p className="admin-notice">{notice}</p> : null}
 
-      <h2>Profile</h2>
+      <h2>{t("Profile")}</h2>
       <dl className="admin-dl">
-        <dt>Status</dt>
-        <dd>{merchant.status}</dd>
-        <dt>Onboarding status</dt>
-        <dd>{merchant.onboardingStatus}</dd>
-        <dt>KYC</dt>
-        <dd>{merchant.kycPassed ? "passed" : "not passed"}</dd>
-        <dt>MDR</dt>
+        <dt>{t("Status")}</dt>
+        <dd>{label(t, merchant.status)}</dd>
+        <dt>{t("Onboarding status")}</dt>
+        <dd>{label(t, merchant.onboardingStatus)}</dd>
+        <dt>{t("KYC")}</dt>
+        <dd>{merchant.kycPassed ? t("passed") : t("not passed")}</dd>
+        <dt>{t("MDR")}</dt>
         <dd>
           {(merchant.mdrBps / 100).toFixed(2)}% ({merchant.mdrBps} bps)
         </dd>
-        <dt>Current negotiated rate</dt>
+        <dt>{t("Current negotiated rate")}</dt>
         <dd>
           {detail.currentFeeSchedule
-            ? `${(detail.currentFeeSchedule.mdrBps / 100).toFixed(2)}% (${detail.currentFeeSchedule.mdrBps} bps), effective ${new Date(detail.currentFeeSchedule.effectiveFrom).toLocaleDateString()}`
-            : "no negotiated schedule on file (uses MDR above)"}
+            ? t("{rate}% ({bps} bps), effective {date}", {
+                rate: (detail.currentFeeSchedule.mdrBps / 100).toFixed(2),
+                bps: detail.currentFeeSchedule.mdrBps,
+                date: formatDate(detail.currentFeeSchedule.effectiveFrom),
+              })
+            : t("no negotiated schedule on file (uses MDR above)")}
         </dd>
-        <dt>Mode</dt>
-        <dd>{merchant.testMode ? "test" : "live"}</dd>
-        <dt>Created</dt>
-        <dd>{new Date(merchant.createdAt).toLocaleString()}</dd>
+        <dt>{t("Mode")}</dt>
+        <dd>{merchant.testMode ? t("test") : t("live")}</dd>
+        <dt>{t("Created")}</dt>
+        <dd>{formatDateTime(merchant.createdAt)}</dd>
         {profile ? (
           <>
-            <dt>Legal name</dt>
+            <dt>{t("Legal name")}</dt>
             <dd>{profile.legalName}</dd>
-            <dt>Registration number</dt>
+            <dt>{t("Registration number")}</dt>
             <dd>{profile.registrationNumber}</dd>
-            <dt>Business type</dt>
+            <dt>{t("Business type")}</dt>
             <dd>{profile.businessType}</dd>
-            <dt>Contact</dt>
+            <dt>{t("Contact")}</dt>
             <dd>
-              {profile.contactEmail} / {profile.contactPhone}
+              <bdi>{profile.contactEmail}</bdi> / <bdi>{profile.contactPhone}</bdi>
             </dd>
-            <dt>Address</dt>
+            <dt>{t("Address")}</dt>
             <dd>
               {profile.addressLine1}
               {profile.addressLine2 ? `, ${profile.addressLine2}` : ""}, {profile.city}
@@ -295,36 +316,33 @@ export function MerchantDetailPage() {
           </>
         ) : null}
       </dl>
-      {!profile ? <p className="admin-muted">No business profile submitted yet.</p> : null}
+      {!profile ? <p className="admin-muted">{t("No business profile submitted yet.")}</p> : null}
 
-      <h2>Balance</h2>
+      <h2>{t("Balance")}</h2>
       {detail.balance ? (
         <p>
-          Cached payable: <strong>{bhd(detail.balance.cachedPayableFils)}</strong> (updated{" "}
-          {new Date(detail.balance.updatedAt).toLocaleString()}). The ledger remains authoritative;
-          this figure is a cache, rebuildable from Settlement ops.
+          {t("Cached payable:")} <strong>{bhd(detail.balance.cachedPayableFils)}</strong> ({t("updated")}{" "}
+          {formatDateTime(detail.balance.updatedAt)}). {t("The ledger remains authoritative; this figure is a cache, rebuildable from Settlement ops.")}
         </p>
       ) : (
-        <p className="admin-muted">No cached balance row yet.</p>
+        <p className="admin-muted">{t("No cached balance row yet.")}</p>
       )}
 
-      <h2>Adjust balance</h2>
+      <h2>{t("Adjust balance")}</h2>
       <p className="admin-muted">
-        A direct correction to this merchant&apos;s cached payable balance, for when support has
-        confirmed the figure on screen is wrong and it needs to be right now rather than after the
-        next settlement cycle. Requires the <code>finance</code> or <code>super_admin</code> role.
+        {t("A direct correction to this merchant's cached payable balance, for when support has confirmed the figure on screen is wrong and it needs to be right now rather than after the next settlement cycle. Requires the finance or super admin role.")}
       </p>
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role is read-only for balance corrections. Ask a finance admin.
+            {t("Your role is read-only for balance corrections. Ask a finance admin.")}
           </p>
         }
       >
         <div className="admin-form">
           <label>
-            Delta (fils, may be negative)
+            {t("Delta (fils, may be negative)")}
             <input
               value={adjustDeltaFils}
               onChange={(e) => setAdjustDeltaFils(e.target.value)}
@@ -333,11 +351,11 @@ export function MerchantDetailPage() {
             />
           </label>
           <label>
-            Reason
+            {t("Reason")}
             <input
               value={adjustReason}
               onChange={(e) => setAdjustReason(e.target.value)}
-              placeholder="phone confirmation with merchant"
+              placeholder={t("phone confirmation with merchant")}
             />
           </label>
           <div>
@@ -346,30 +364,28 @@ export function MerchantDetailPage() {
               disabled={busy || !adjustDeltaFils.trim() || !adjustReason.trim()}
               onClick={() => void handleAdjustBalance()}
             >
-              Adjust balance
+              {t("Adjust balance")}
             </button>
           </div>
         </div>
       </RequireRole>
 
-      <h2>Issue credit</h2>
+      <h2>{t("Issue credit")}</h2>
       <p className="admin-muted">
-        Journals a manual credit to this merchant&apos;s payable balance. Above the approval limit
-        it waits in <Link to="/credits">Credits</Link> for a second finance operator; at or below
-        it, it posts immediately. The effective date is the accounting date the ledger legs are
-        booked against.
+        {t("Journals a manual credit to this merchant's payable balance. Above the approval limit it waits in Credits for a second finance operator; at or below it, it posts immediately. The effective date is the accounting date the ledger legs are booked against.")}{" "}
+        <Link to="/credits">{t("Credits")}</Link>
       </p>
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role cannot issue credits. Ask a finance admin.
+            {t("Your role cannot issue credits. Ask a finance admin.")}
           </p>
         }
       >
         <form className="admin-form" onSubmit={(e) => void handleIssueCredit(e)}>
           <label>
-            Amount (BD, up to 3 decimals)
+            {t("Amount (BD, up to 3 decimals)")}
             <input
               type="text"
               required
@@ -379,18 +395,18 @@ export function MerchantDetailPage() {
             />
           </label>
           <label>
-            Reason
+            {t("Reason")}
             <select
               value={creditReason}
               onChange={(e) => setCreditReason(e.target.value as CreditReasonCode)}
             >
-              <option value="goodwill">Goodwill</option>
-              <option value="dispute_resolution">Dispute resolution</option>
-              <option value="correction">Correction</option>
+              <option value="goodwill">{t("Goodwill")}</option>
+              <option value="dispute_resolution">{t("Dispute resolution")}</option>
+              <option value="correction">{t("Correction")}</option>
             </select>
           </label>
           <label>
-            Effective date
+            {t("Effective date")}
             <input
               type="date"
               required
@@ -404,104 +420,114 @@ export function MerchantDetailPage() {
               checked={creditReverseFee}
               onChange={(e) => setCreditReverseFee(e.target.checked)}
             />{" "}
-            Also reverse the MDR on this amount ({(merchant.mdrBps / 100).toFixed(2)}%)
+            {t("Also reverse the MDR on this amount ({rate}%)", { rate: (merchant.mdrBps / 100).toFixed(2) })}
           </label>
           <label>
-            Memo (optional)
+            {t("Memo (optional)")}
             <textarea value={creditMemo} onChange={(e) => setCreditMemo(e.target.value)} rows={2} />
           </label>
           <button type="submit" disabled={busy}>
-            {busy ? "Submitting..." : "Issue credit"}
+            {busy ? t("Submitting...") : t("Issue credit")}
           </button>
         </form>
       </RequireRole>
 
-      <h2>KYC review</h2>
+      <h2>{t("KYC review")}</h2>
+      <RequireRole allow={["finance", "super_admin"]}>
+        <h3>{t("Uploaded documents")}</h3>
+        {kycDocuments.length === 0 ? <p className="admin-muted">{t("No documents uploaded yet.")}</p> : (
+          <ul>{kycDocuments.map((document) => (
+            <li key={document.id}>
+              {document.documentType}: {document.fileName}{" · "}
+              <a href={`${API_BASE_URL}/v1/admin/merchants/${encodeURIComponent(id ?? "")}/kyc/documents/${encodeURIComponent(document.id)}/file`} target="_blank" rel="noreferrer">{t("View document")}</a>
+            </li>
+          ))}</ul>
+        )}
+      </RequireRole>
       <p className="admin-muted">
-        Approving or rejecting requires the <code>finance</code> or <code>super_admin</code> role;
-        the API enforces it and answers <code>403</code> otherwise.
+        {t("Approving or rejecting requires the finance or super admin role; the API enforces it and answers 403 otherwise.")}
       </p>
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role is read-only for KYC decisions. Ask a finance admin to review.
+            {t("Your role is read-only for KYC decisions. Ask a finance admin to review.")}
           </p>
         }
       >
         <div className="admin-form">
           <label>
-            Notes (optional)
+            {t("Notes (optional)")}
             <textarea value={kycNotes} onChange={(e) => setKycNotes(e.target.value)} rows={3} />
           </label>
           <div>
             <button type="button" disabled={busy} onClick={() => void handleKycReview("approved")}>
-              Approve KYC
+              {t("Approve KYC")}
             </button>{" "}
             <button type="button" disabled={busy} onClick={() => void handleKycReview("rejected")}>
-              Reject KYC
+              {t("Reject KYC")}
             </button>
           </div>
         </div>
       </RequireRole>
 
-      <h3>Review history</h3>
+      <h3>{t("Review history")}</h3>
       {kycReviews.length === 0 ? (
-        <p className="admin-muted">No reviews recorded.</p>
+        <p className="admin-muted">{t("No reviews recorded.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Outcome</th>
-              <th>Reviewer</th>
-              <th>Notes</th>
-              <th>Reviewed at</th>
+              <th>{t("Outcome")}</th>
+              <th>{t("Reviewer")}</th>
+              <th>{t("Notes")}</th>
+              <th>{t("Reviewed at")}</th>
             </tr>
           </thead>
           <tbody>
             {kycReviews.map((review) => (
               <tr key={review.id}>
-                <td>{review.outcome}</td>
+                <td>{label(t, review.outcome)}</td>
                 <td>{review.reviewerIdentifier}</td>
                 <td>{review.notes ?? "-"}</td>
-                <td>{new Date(review.reviewedAt).toLocaleString()}</td>
+                <td>{formatDateTime(review.reviewedAt)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
 
-      <h2>API keys</h2>
+      <h2>{t("API keys")}</h2>
       {rotatedKey ? (
         <div className="admin-notice">
           <p>
-            <strong>New key issued — copy it now.</strong> This value is shown once and is not
-            recoverable afterwards.
+            <strong>{t("New key issued — copy it now.")}</strong>{" "}
+            {t("This value is shown once and is not recoverable afterwards.")}
           </p>
           <p>
             <code>{rotatedKey.rawKey}</code>
           </p>
           <p className="admin-muted">
-            New key id <code>{rotatedKey.id}</code>, replacing previous key{" "}
+            {t("New key id")} <code>{rotatedKey.id}</code>, {t("replacing previous key")}{" "}
             <code>{rotatedKey.previousKeyId}</code>.
           </p>
           <button type="button" onClick={() => setRotatedKey(null)}>
-            Dismiss
+            {t("Dismiss")}
           </button>
         </div>
       ) : null}
 
       {apiKeys.length === 0 ? (
-        <p className="admin-muted">No API keys.</p>
+        <p className="admin-muted">{t("No API keys.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Prefix</th>
-              <th>Label</th>
-              <th>Created</th>
-              <th>Last used</th>
-              <th>Revoked</th>
+              <th>{t("Prefix")}</th>
+              <th>{t("Label")}</th>
+              <th>{t("Created")}</th>
+              <th>{t("Last used")}</th>
+              <th>{t("Revoked")}</th>
               <th />
             </tr>
           </thead>
@@ -512,17 +538,17 @@ export function MerchantDetailPage() {
                   <code>{key.prefix}</code>
                 </td>
                 <td>{key.label ?? "-"}</td>
-                <td>{new Date(key.createdAt).toLocaleDateString()}</td>
-                <td>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "never"}</td>
-                <td>{key.revokedAt ? new Date(key.revokedAt).toLocaleString() : "-"}</td>
+                <td>{formatDate(key.createdAt)}</td>
+                <td>{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : t("never")}</td>
+                <td>{key.revokedAt ? formatDateTime(key.revokedAt) : "-"}</td>
                 <td>
                   {key.revokedAt ? null : (
                     <RequireRole
                       allow={["finance", "super_admin"]}
-                      fallback={<span className="admin-muted">finance role required</span>}
+                      fallback={<span className="admin-muted">{t("finance role required")}</span>}
                     >
                       <button type="button" onClick={() => setPendingRotation(key.id)}>
-                        Rotate
+                        {t("Rotate")}
                       </button>
                     </RequireRole>
                   )}
@@ -536,12 +562,11 @@ export function MerchantDetailPage() {
       {pendingRotation ? (
         <div className="admin-confirm">
           <p>
-            <strong>Rotate this API key?</strong> The current key is revoked and a replacement is
-            issued in the same transaction, so the merchant is never left without a working key —
-            but any integration still sending the old key will start failing immediately.
+            <strong>{t("Rotate this API key?")}</strong>{" "}
+            {t("The current key is revoked and a replacement is issued in the same transaction, so the merchant is never left without a working key — but any integration still sending the old key will start failing immediately.")}
           </p>
           <label>
-            Label for the new key (optional)
+            {t("Label for the new key (optional)")}
             <input
               type="text"
               value={rotationLabel}
@@ -549,7 +574,7 @@ export function MerchantDetailPage() {
             />
           </label>
           <button type="button" disabled={busy} onClick={() => void handleRotate(pendingRotation)}>
-            {busy ? "Rotating..." : "Yes, rotate it"}
+            {busy ? t("Rotating...") : t("Yes, rotate it")}
           </button>{" "}
           <button
             type="button"
@@ -558,61 +583,61 @@ export function MerchantDetailPage() {
               setRotationLabel("");
             }}
           >
-            Cancel
+            {t("Cancel")}
           </button>
         </div>
       ) : null}
 
-      <h2>Webhook endpoints</h2>
+      <h2>{t("Webhook endpoints")}</h2>
       {webhookEndpoints.length === 0 ? (
-        <p className="admin-muted">No endpoints registered.</p>
+        <p className="admin-muted">{t("No endpoints registered.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>URL</th>
-              <th>Status</th>
-              <th>Secret prefix</th>
-              <th>Created</th>
+              <th>{t("URL")}</th>
+              <th>{t("Status")}</th>
+              <th>{t("Secret prefix")}</th>
+              <th>{t("Created")}</th>
             </tr>
           </thead>
           <tbody>
             {webhookEndpoints.map((endpoint) => (
               <tr key={endpoint.id}>
-                <td>{endpoint.url}</td>
-                <td>{endpoint.status}</td>
+                <td dir="ltr">{endpoint.url}</td>
+                <td>{label(t, endpoint.status)}</td>
                 <td>
                   <code>{endpoint.secretPrefix}</code>
                 </td>
-                <td>{new Date(endpoint.createdAt).toLocaleDateString()}</td>
+                <td>{formatDate(endpoint.createdAt)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
       <p>
-        <Link to={`/webhooks/${merchant.id}`}>Replay a batch of deliveries for this merchant</Link>
+        <Link to={`/webhooks/${merchant.id}`}>{t("Replay a batch of deliveries for this merchant")}</Link>
       </p>
 
-      <h2>Recent settlement batches</h2>
+      <h2>{t("Recent settlement batches")}</h2>
       {batches.length === 0 ? (
-        <p className="admin-muted">No batches yet.</p>
+        <p className="admin-muted">{t("No batches yet.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Status</th>
-              <th>Gross</th>
-              <th>Fee</th>
-              <th>Net payout</th>
+              <th>{t("Date")}</th>
+              <th>{t("Status")}</th>
+              <th>{t("Gross")}</th>
+              <th>{t("Fee")}</th>
+              <th>{t("Net payout")}</th>
             </tr>
           </thead>
           <tbody>
             {batches.map((batch) => (
               <tr key={batch.id}>
                 <td>{batch.batchDate}</td>
-                <td>{batch.status}</td>
+                <td>{label(t, batch.status)}</td>
                 <td>{bhd(batch.grossFils)}</td>
                 <td>{bhd(batch.feeFils)}</td>
                 <td>{bhd(batch.netPayoutFils)}</td>
@@ -622,39 +647,35 @@ export function MerchantDetailPage() {
         </table>
       )}
 
-      <h2>Recompute transaction statuses</h2>
+      <h2>{t("Recompute transaction statuses")}</h2>
       <p className="admin-muted">
-        Re-derives this merchant&apos;s transaction statuses from their own captured/refunded
-        amounts. Rows written before the refunds release can carry a status that predates the
-        derivation rule; this backfills them. Rows that already agree are left alone.
+        {t("Re-derives this merchant's transaction statuses from their own captured/refunded amounts. Rows written before the refunds release can carry a status that predates the derivation rule; this backfills them. Rows that already agree are left alone.")}
       </p>
       <RequireRole
         allow={["finance", "super_admin"]}
         fallback={
           <p className="admin-muted">
-            Your role cannot run this backfill. Ask a finance admin.
+            {t("Your role cannot run this backfill. Ask a finance admin.")}
           </p>
         }
       >
         <button type="button" disabled={busy} onClick={() => void handleRecomputeStatuses()}>
-          {busy ? "Working..." : "Recompute statuses"}
+          {busy ? t("Working...") : t("Recompute statuses")}
         </button>
       </RequireRole>
 
-      <h2>View as merchant</h2>
+      <h2>{t("View as merchant")}</h2>
       <p className="admin-muted">
-        Starts a short-lived, audited impersonation grant. It always acts with this merchant&apos;s
-        least-privileged <code>support</code> role — never with your admin role — and it expires on
-        its own. A banner stays on screen until you exit it.
+        {t("Starts a short-lived, audited impersonation grant. It always acts with this merchant's least-privileged support role — never with your admin role — and it expires on its own. A banner stays on screen until you exit it.")}
       </p>
       <button type="button" disabled={busy} onClick={() => void handleImpersonate()}>
-        View as merchant
+        {t("View as merchant")}
       </button>
       {impersonationUrl ? (
         <p>
-          Your browser blocked the new tab —{" "}
+          {t("Your browser blocked the new tab —")}{" "}
           <a href={impersonationUrl} target="_blank" rel="noreferrer">
-            open the merchant dashboard
+            {t("open the merchant dashboard")}
           </a>
           .
         </p>

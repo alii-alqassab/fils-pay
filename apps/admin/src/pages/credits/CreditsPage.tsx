@@ -8,6 +8,9 @@ import {
 } from "../../api/credits.js";
 import { describeError } from "../../api/client.js";
 import { RequireRole } from "../../auth/RequireRole.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
+import { tk } from "../../i18n/translate.js";
 import type { CreditRequestDto, CreditRequestStatus } from "../../types.js";
 
 function bhd(fils: number): string {
@@ -15,9 +18,9 @@ function bhd(fils: number): string {
 }
 
 const STATUS_TABS: Array<{ value: CreditRequestStatus; label: string }> = [
-  { value: "pending_approval", label: "Awaiting approval" },
-  { value: "posted", label: "Posted" },
-  { value: "rejected", label: "Rejected" },
+  { value: "pending_approval", label: tk("Awaiting approval") },
+  { value: "posted", label: tk("Posted") },
+  { value: "rejected", label: tk("Rejected") },
 ];
 
 /**
@@ -31,6 +34,7 @@ const STATUS_TABS: Array<{ value: CreditRequestStatus; label: string }> = [
 // approve is gated server side but issuing (MerchantDetail) only in the ui? — am
 // MK: both are server-side
 export function CreditsPage() {
+  const { t } = useI18n();
   const [status, setStatus] = useState<CreditRequestStatus>("pending_approval");
   const [items, setItems] = useState<CreditRequestDto[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -74,9 +78,10 @@ export function CreditsPage() {
     try {
       const record = await approveCreditRequest(id);
       setNotice(
-        `Approved. ${bhd(record.postedAmountFils)} journaled to entry group ${
-          record.ledgerEntryGroupId ?? "(unknown)"
-        }.`,
+        t("Approved. {amount} journaled to entry group {group}.", {
+          amount: bhd(record.postedAmountFils),
+          group: record.ledgerEntryGroupId ?? t("(unknown)"),
+        }),
       );
       await load();
     } catch (err) {
@@ -92,7 +97,7 @@ export function CreditsPage() {
     setNotice(null);
     try {
       await rejectCreditRequest(id, rejectReason.trim() ? rejectReason.trim() : undefined);
-      setNotice("Credit request rejected. Nothing was journaled.");
+      setNotice(t("Credit request rejected. Nothing was journaled."));
       setPendingReject(null);
       setRejectReason("");
       await load();
@@ -105,11 +110,9 @@ export function CreditsPage() {
 
   return (
     <section>
-      <h1>Merchant credits</h1>
+      <h1>{t("Merchant credits")}</h1>
       <p className="admin-muted">
-        Manual credits are journaled to <code>ledger_entries</code> like any other money movement.
-        A credit above the approval limit cannot post until a second <code>finance</code> or{" "}
-        <code>super_admin</code> operator — not the one who raised it — approves it.
+        {t("Manual credits are journaled to the ledger like any other money movement. A credit above the approval limit cannot post until a second finance or super admin operator — not the one who raised it — approves it.")}
       </p>
 
       <nav className="admin-nav">
@@ -120,29 +123,29 @@ export function CreditsPage() {
             disabled={tab.value === status}
             onClick={() => setStatus(tab.value)}
           >
-            {tab.label}
+            {t(tab.label)}
           </button>
         ))}
       </nav>
 
-      {loadError ? <p className="admin-error">{loadError}</p> : null}
-      {actionError ? <p className="admin-error">{actionError}</p> : null}
+      {loadError ? <p className="admin-error">{t(loadError)}</p> : null}
+      {actionError ? <p className="admin-error">{t(actionError)}</p> : null}
       {notice ? <p className="admin-notice">{notice}</p> : null}
 
       {items.length === 0 ? (
-        <p className="admin-muted">Nothing here.</p>
+        <p className="admin-muted">{t("Nothing here.")}</p>
       ) : (
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Requested by</th>
-              <th>Merchant</th>
-              <th>Reason</th>
-              <th>Base</th>
-              <th>Fee reversal</th>
-              <th>Posted total</th>
-              <th>Effective date</th>
-              <th>Approved by</th>
+              <th>{t("Requested by")}</th>
+              <th>{t("Merchant")}</th>
+              <th>{t("Reason")}</th>
+              <th>{t("Base")}</th>
+              <th>{t("Fee reversal")}</th>
+              <th>{t("Posted total")}</th>
+              <th>{t("Effective date")}</th>
+              <th>{t("Approved by")}</th>
               <th />
             </tr>
           </thead>
@@ -170,25 +173,25 @@ export function CreditsPage() {
                   {item.status === "pending_approval" ? (
                     <RequireRole
                       allow={["finance", "super_admin"]}
-                      fallback={<span className="admin-muted">finance role required</span>}
+                      fallback={<span className="admin-muted">{t("finance role required")}</span>}
                     >
                       <button
                         type="button"
                         disabled={busyId === item.id}
                         onClick={() => void handleApprove(item.id)}
                       >
-                        Approve
+                        {t("Approve")}
                       </button>{" "}
                       <button
                         type="button"
                         disabled={busyId === item.id}
                         onClick={() => setPendingReject(item.id)}
                       >
-                        Reject
+                        {t("Reject")}
                       </button>
                     </RequireRole>
                   ) : (
-                    item.status
+                    label(t, item.status)
                   )}
                 </td>
               </tr>
@@ -200,11 +203,11 @@ export function CreditsPage() {
       {pendingReject ? (
         <div className="admin-confirm">
           <p>
-            <strong>Reject this credit request?</strong> Nothing is journaled, and the request
-            cannot be approved afterwards.
+            <strong>{t("Reject this credit request?")}</strong>{" "}
+            {t("Nothing is journaled, and the request cannot be approved afterwards.")}
           </p>
           <label>
-            Reason (optional — recorded in the admin audit log)
+            {t("Reason (optional — recorded in the admin audit log)")}
             <input
               type="text"
               value={rejectReason}
@@ -216,7 +219,7 @@ export function CreditsPage() {
             disabled={busyId === pendingReject}
             onClick={() => void handleReject(pendingReject)}
           >
-            Yes, reject it
+            {t("Yes, reject it")}
           </button>{" "}
           <button
             type="button"
@@ -225,7 +228,7 @@ export function CreditsPage() {
               setRejectReason("");
             }}
           >
-            Cancel
+            {t("Cancel")}
           </button>
         </div>
       ) : null}
@@ -233,7 +236,7 @@ export function CreditsPage() {
       {nextCursor ? (
         <p>
           <button type="button" onClick={() => void loadMore()}>
-            Load more
+            {t("Load more")}
           </button>
         </p>
       ) : null}

@@ -13,6 +13,15 @@ export type KycDocumentType = "commercial_registration" | "owner_id" | "proof_of
 /** Document types the registry/bank issues as a PDF, never as a photo. */
 const PDF_ONLY_DOCUMENT_TYPES: readonly KycDocumentType[] = ["commercial_registration", "bank_letter"];
 
+/** Strips path components, control chars and header-significant characters
+ *  (quotes, backslash, semicolon) so the stored/echoed name is safe in a
+ *  Content-Disposition header. Display only: storage keys are sha256-based. */
+export function sanitizeFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? "";
+  const clean = base.replace(/[\x00-\x1f\x7f"\\;]/g, "_").trim().slice(0, 200);
+  return clean === "" || clean === "." || clean === ".." ? "document" : clean;
+}
+
 /** @property fileName Informational only; never used for validation. */
 export interface RecordKycDocumentInput {
   merchantId: string;
@@ -52,22 +61,19 @@ export async function recordKycDocument(
     throw new UnprocessableEntityError("invalid_file_type");
   }
 
-  // FH: claude: "detected is already computed; compare detected === 'pdf' instead of the filename." a jpeg named
-  // cr.pdf passes this?
-  // MK: detectFileType already rejects non-pdf bytes for these doc types. fixed in FP-231
   // Commercial registration certificates and bank letters are always
-  // issued as scanned/exported PDFs by the registry or the bank — a phone
-  // photo of either isn't an acceptable substitute for review. Checked
-  // against the filename since these come straight from each merchant's
-  // own scanner or the registry portal's own export, which name them
-  // consistently (`CR-2026.pdf`, `bank_letter.pdf`); `detected` above has
-  // already confirmed the bytes are one of our three accepted formats, so
-  // this only narrows which of those three this particular document type
-  // requires.
-  if (PDF_ONLY_DOCUMENT_TYPES.includes(input.documentType) && !input.fileName.toLowerCase().endsWith(".pdf")) {
+  // issued as PDFs by the registry or the bank — a phone photo of either
+  // isn't an acceptable substitute for review. The content type is decided
+  // from the magic bytes; the filename extension must additionally agree.
+  // So a PDF named registration.docx is rejected too.
+  if (
+    PDF_ONLY_DOCUMENT_TYPES.includes(input.documentType) &&
+    (detected !== "pdf" || !/\.pdf$/i.test(sanitizeFileName(input.fileName)))
+  ) {
     throw new UnprocessableEntityError("document_must_be_pdf", "commercial_registration and bank_letter documents must be a PDF");
   }
 
+  const safeFileName = sanitizeFileName(input.fileName);
   const sha256 = sha256Hex(input.buffer);
   const storageKey = join(input.merchantId, `${sha256}.${extensionFor(detected)}`);
   const fullPath = join(config.kycUploadDir, storageKey);
@@ -94,7 +100,7 @@ export async function recordKycDocument(
       [
         input.merchantId,
         input.documentType,
-        input.fileName,
+        safeFileName,
         mimeType,
         input.buffer.length,
         storageKey,
@@ -129,7 +135,7 @@ export async function recordKycDocument(
     return {
       id: doc.id,
       documentType: input.documentType,
-      fileName: input.fileName,
+      fileName: safeFileName,
       mimeType,
       uploadedAt: doc.uploaded_at,
       onboardingStatus,
@@ -194,7 +200,7 @@ export async function getKycDocumentFile(
     throw new NotFoundError("kyc_document_not_found");
   }
   const buffer = await readFile(join(config.kycUploadDir, row.storage_key));
-  return { buffer, mimeType: row.mime_type, fileName: row.file_name };
+  return { buffer, mimeType: row.mime_type, fileName: sanitizeFileName(row.file_name) };
 }
 
 /** The review-UI preview counterpart of `getKycDocumentFile`. A document
@@ -221,5 +227,5 @@ export async function getKycThumbnailFile(
     throw new NotFoundError("kyc_thumbnail_not_found");
   }
   const buffer = await readFile(join(config.kycUploadDir, row.thumbnail_storage_key));
-  return { buffer, mimeType: row.thumbnail_mime_type, fileName: row.file_name };
+  return { buffer, mimeType: row.thumbnail_mime_type, fileName: sanitizeFileName(row.file_name) };
 }

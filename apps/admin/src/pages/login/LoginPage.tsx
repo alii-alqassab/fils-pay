@@ -4,6 +4,8 @@ import { login, verifyOtp } from "../../api/auth.js";
 import { describeError } from "../../api/client.js";
 import { useAdminAuth } from "../../auth/AdminAuthContext.js";
 import type { AdminLoginResponse } from "../../types.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { LanguageToggle } from "../../i18n/LanguageToggle.js";
 
 type Step =
   | { kind: "credentials" }
@@ -20,6 +22,7 @@ export function LoginPage() {
   const { status, refresh } = useAdminAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { t, formatTime } = useI18n();
 
   const [step, setStep] = useState<Step>({ kind: "credentials" });
   const [email, setEmail] = useState("");
@@ -71,15 +74,16 @@ export function LoginPage() {
 
   return (
     <main className="admin-centered">
-      <h1>FilsPay Admin</h1>
-      <p className="admin-muted">Internal operations console.</p>
+      <LanguageToggle className="admin-lang-inline" />
+      <h1>{t("FilsPay Admin")}</h1>
+      <p className="admin-muted">{t("Internal operations console.")}</p>
 
-      {error ? <p className="admin-error">{error}</p> : null}
+      {error ? <p className="admin-error">{t(error)}</p> : null}
 
       {step.kind === "credentials" ? (
         <form onSubmit={(e) => void handleCredentials(e)} className="admin-form">
           <label>
-            Email
+            {t("Email")}
             <input
               type="email"
               autoComplete="username"
@@ -89,7 +93,7 @@ export function LoginPage() {
             />
           </label>
           <label>
-            Password
+            {t("Password")}
             <input
               type="password"
               autoComplete="current-password"
@@ -99,22 +103,22 @@ export function LoginPage() {
             />
           </label>
           <button type="submit" disabled={submitting}>
-            {submitting ? "Signing in..." : "Continue"}
+            {submitting ? t("Signing in...") : t("Continue")}
           </button>
         </form>
       ) : (
         <form onSubmit={(e) => void handleOtp(e)} className="admin-form">
           <p>
-            A one-time code was issued for <strong>{email}</strong>. It expires at{" "}
-            {new Date(step.challenge.otpExpiresAt).toLocaleTimeString()}.
+            {t("We emailed a 6-digit code to")} <bdi><strong>{email}</strong></bdi>. {t("It expires at")}{" "}
+            {formatTime(step.challenge.otpExpiresAt)}.
           </p>
           {step.challenge.devOtpCode ? (
             <p className="admin-muted">
-              Development code: <code>{step.challenge.devOtpCode}</code>
+              {t("Development code:")} <code>{step.challenge.devOtpCode}</code>
             </p>
           ) : null}
           <label>
-            One-time code
+            {t("One-time code")}
             <input
               type="text"
               inputMode="numeric"
@@ -125,7 +129,7 @@ export function LoginPage() {
             />
           </label>
           <button type="submit" disabled={submitting}>
-            {submitting ? "Verifying..." : "Verify"}
+            {submitting ? t("Verifying...") : t("Verify")}
           </button>
           <button
             type="button"
@@ -135,7 +139,7 @@ export function LoginPage() {
               setError(null);
             }}
           >
-            Start over
+            {t("Start over")}
           </button>
         </form>
       )}

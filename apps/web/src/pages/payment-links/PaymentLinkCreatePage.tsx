@@ -1,19 +1,18 @@
 import { useState } from "react";
+import { parseBhdToFils } from "@filspay/money";
 import { Link, useNavigate } from "react-router-dom";
 import { createPaymentLink } from "../../api/paymentLinks.js";
 import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { localDateTimeToIso } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { tk } from "../../i18n/translate.js";
 
 /**
  * `POST /v1/merchants/:merchantId/payment-links`, `owner`/`finance`
  * server-side.
  *
- * Amount is entered in fils — the platform's actual unit, and the same unit
- * the checkout page works in. No decimal-BHD input widget: a second
- * string-to-fils parser in the browser is exactly the kind of place a money
- * bug hides, and `parseBhdToFils` exists in @filspay/money for whenever a
- * phase genuinely wants that UI.
+ * Amount is entered in BHD and converted by the shared money parser.
  *
  * The two client-side checks below mirror the server's own two real checks so
  * an obviously-bad value doesn't need a round trip. They are not the
@@ -23,32 +22,38 @@ import { localDateTimeToIso } from "../../format.js";
 export function PaymentLinkCreatePage() {
   const { me } = useDashboardAuth();
   const navigate = useNavigate();
+  const { t } = useI18n();
 
-  const [amountFils, setAmountFils] = useState("");
+  const [amountBhd, setAmountBhd] = useState("");
   const [reference, setReference] = useState("");
   const [description, setDescription] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // YA: amount typed as raw fils, no BD conversion. intentional for now
   async function handleSubmit(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     if (!me) return;
     setError(null);
 
-    const amount = Number(amountFils);
-    if (!Number.isInteger(amount) || amount <= 0) {
-      setError("Amount must be a positive whole number of fils.");
+    let amount: number;
+    try {
+      amount = parseBhdToFils(amountBhd.trim());
+    } catch {
+      setError(tk("Enter a valid BHD amount with at most three decimal places."));
+      return;
+    }
+    if (amount <= 0) {
+      setError(tk("Amount must be greater than zero."));
       return;
     }
     const expiresAtIso = localDateTimeToIso(expiresAt);
     if (!expiresAtIso) {
-      setError("Expiry must be a valid date and time.");
+      setError(tk("Expiry must be a valid date and time."));
       return;
     }
     if (new Date(expiresAtIso).getTime() <= Date.now()) {
-      setError("Expiry must be in the future.");
+      setError(tk("Expiry must be in the future."));
       return;
     }
 
@@ -70,33 +75,33 @@ export function PaymentLinkCreatePage() {
 
   return (
     <section>
-      <h1>New payment link</h1>
+      <h1>{t("New payment link")}</h1>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <form className="dash-form" onSubmit={(e) => void handleSubmit(e)}>
         <label>
-          Amount in fils
+          {t("Amount (BHD)")}
           <input
-            type="number"
-            min={1}
-            step={1}
+            type="text"
+            inputMode="decimal"
+            placeholder="10.000"
             required
-            value={amountFils}
-            onChange={(e) => setAmountFils(e.target.value)}
+            value={amountBhd}
+            onChange={(e) => setAmountBhd(e.target.value)}
           />
         </label>
-        <p className="dash-muted dash-hint">1000 fils = 1.000 BHD.</p>
+        <p className="dash-muted dash-hint">{t("BHD supports up to three decimal places.")}</p>
         <label>
-          Reference (optional)
+          {t("Reference (optional)")}
           <input type="text" value={reference} onChange={(e) => setReference(e.target.value)} />
         </label>
         <label>
-          Description (optional)
+          {t("Description (optional)")}
           <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
         <label>
-          Expires at
+          {t("Expires at")}
           <input
             type="datetime-local"
             required
@@ -105,12 +110,12 @@ export function PaymentLinkCreatePage() {
           />
         </label>
         <button type="submit" className="dash-button" disabled={submitting}>
-          {submitting ? "Creating..." : "Create payment link"}
+          {submitting ? t("Creating...") : t("Create payment link")}
         </button>
       </form>
 
       <p>
-        <Link to="/dashboard/payment-links">Back to payment links</Link>
+        <Link to="/dashboard/payment-links">{t("Back to payment links")}</Link>
       </p>
     </section>
   );

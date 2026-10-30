@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useDashboardAuth } from "./DashboardAuthContext.js";
+import { useI18n } from "../i18n/I18nProvider.js";
 import type { MerchantRole } from "../types.js";
 
 /**
@@ -58,15 +59,15 @@ export function RoleGatedPage({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <RequireRole
       allow={allow}
       fallback={
         <section>
-          <h1>{title}</h1>
+          <h1>{t(title)}</h1>
           <p className="dash-error">
-            You don&apos;t have permission to use this page — ask an owner or finance
-            user on your account.
+            {t("You don't have permission to use this page — ask an owner or finance user on your account.")}
           </p>
         </section>
       }

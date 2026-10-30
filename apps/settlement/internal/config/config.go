@@ -118,6 +118,10 @@ func (c Config) RequireInternalToken() error {
 	if c.InternalToken == "" {
 		return fmt.Errorf("config: SETTLEMENT_INTERNAL_TOKEN environment variable is not set")
 	}
+	// The compose default must never authenticate a production daemon.
+	if c.InternalToken == "dev-token" && os.Getenv("NODE_ENV") == "production" {
+		return fmt.Errorf("config: SETTLEMENT_INTERNAL_TOKEN must not be the dev default when NODE_ENV=production")
+	}
 	return nil
 }
 

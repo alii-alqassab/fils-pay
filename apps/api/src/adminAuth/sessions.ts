@@ -1,7 +1,9 @@
 import type { Pool, PoolClient } from "pg";
 import { randomToken, sha256Hex } from "../lib/crypto.js";
 
-export type AdminRole = "support" | "finance" | "super_admin";
+/** `master` is the single "big boss" account: everything `super_admin` can
+ *  do, plus the exclusive right to create and manage admin accounts. */
+export type AdminRole = "support" | "finance" | "super_admin" | "master";
 
 /** @property expiresAt The short pending TTL; promoteAdminSession extends it. */
 export interface CreatedAdminSession {
@@ -75,6 +77,17 @@ export async function promoteAdminSession(
     [adminSessionId, expiresAt],
   );
   return expiresAt;
+}
+
+/**
+ * Replaces the session's token with a fresh one and returns the new raw token.
+ * Called at OTP success so the pending token is never the authenticated
+ * credential (session fixation, FP-198).
+ */
+export async function rotateAdminSessionToken(client: PoolClient, adminSessionId: string): Promise<string> {
+  const rawToken = randomToken(32);
+  await client.query(`UPDATE admin_sessions SET token_hash = $2 WHERE id = $1`, [adminSessionId, sha256Hex(rawToken)]);
+  return rawToken;
 }
 
 /**

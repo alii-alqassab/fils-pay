@@ -5,7 +5,6 @@ import { withTransaction } from "../db/withTransaction.js";
 import { decodeEncryptionKey, decryptSecret } from "./secretCrypto.js";
 import { signPayload } from "./sign.js";
 import { buildEnvelope } from "./envelope.js";
-import { recordPayoutDisbursementEffect } from "./payoutDisbursement.js";
 import { WEBHOOK_DELIVERY_ID_HEADER, WEBHOOK_SIGNATURE_HEADER } from "./headers.js";
 import type { WebhookTransport } from "./transport.js";
 
@@ -32,15 +31,6 @@ const WEBHOOK_ELIGIBLE_EVENT_TYPES: readonly string[] = [
 ];
 const NOTIFY_CHANNEL = "outbox_events_channel";
 
-type PreDeliveryEffect = (pool: Pool, payload: Record<string, unknown>) => Promise<void>;
-
-const PRE_DELIVERY_EFFECTS: Record<string, PreDeliveryEffect> = {
-  "settlement.paid": async (pool, payload) => {
-    const data = payload.data as { settlementBatchId: string; netPayoutFils: number };
-    await recordPayoutDisbursementEffect(pool, data.settlementBatchId, Number(data.netPayoutFils));
-  },
-};
-
 export type DispatcherConfig = Pick<
   Config,
   | "webhookMaxAttempts"
@@ -50,12 +40,13 @@ export type DispatcherConfig = Pick<
   | "webhookSecretEncryptionKey"
 >;
 
-/** Exponential backoff with a cap and ±10 % jitter. attemptNumber is the
- *  attempt that just failed (1-indexed). */
+/** Exponential backoff with a cap. attemptNumber is the attempt that just
+ *  failed (1-indexed). Deterministic by default; the dispatcher passes
+ *  `Math.random` as `jitter` to spread retries by ±10 %. */
 export function backoffDelayMs(
   attemptNumber: number,
   config: Pick<Config, "webhookBackoffBaseMs" | "webhookBackoffCapMs">,
-  jitter: () => number = Math.random,
+  jitter: () => number = () => 0.5,
 ): number {
   const raw = config.webhookBackoffBaseMs * 2 ** (attemptNumber - 1);
   const capped = Math.min(raw, config.webhookBackoffCapMs);
@@ -130,6 +121,7 @@ async function createMissingDeliveries(pool: Pool): Promise<number> {
 
 interface DueDeliveryRow {
   id: string;
+  claim_token: string;
   endpoint_id: string;
   event_type: string;
   delivery_event_id: string;
@@ -155,12 +147,7 @@ async function attemptOneDelivery(
 ): Promise<void> {
   const key = decodeEncryptionKey(config.webhookSecretEncryptionKey);
   const secret = decryptSecret(row.secret_ciphertext, key);
-  const { signature } = signPayload(row.payload, secret);
-
-  if (row.attempt_count === 0) {
-    const effect = PRE_DELIVERY_EFFECTS[row.event_type];
-    if (effect) await effect(pool, row.payload);
-  }
+  const { signature, body } = signPayload(row.payload, secret);
 
   const result = await transport({
     url: row.url,
@@ -169,7 +156,7 @@ async function attemptOneDelivery(
       [WEBHOOK_DELIVERY_ID_HEADER]: row.delivery_event_id,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(row.payload),
+    body,
     timeoutMs: config.webhookRequestTimeoutMs,
   });
 
@@ -183,9 +170,10 @@ async function attemptOneDelivery(
     await pool.query(
       `UPDATE webhook_deliveries
           SET status = 'succeeded', attempt_count = attempt_count + 1, signature = $2,
-              response_status_code = $3, response_body_excerpt = left($4, 2000), last_attempted_at = now()
-        WHERE id = $1`,
-      [row.id, signature, responseStatusCode, responseBodyParam],
+              response_status_code = $3, response_body_excerpt = left($4, 2000), last_attempted_at = now(),
+              claim_token = NULL, claim_expires_at = NULL
+        WHERE id = $1 AND claim_token = $5`,
+      [row.id, signature, responseStatusCode, responseBodyParam, row.claim_token],
     );
     return;
   }
@@ -195,59 +183,105 @@ async function attemptOneDelivery(
     await pool.query(
       `UPDATE webhook_deliveries
           SET status = 'exhausted', attempt_count = attempt_count + 1, signature = $2,
-              response_status_code = $3, response_body_excerpt = left($4, 2000), last_attempted_at = now()
-        WHERE id = $1`,
-      [row.id, signature, responseStatusCode, responseBodyParam],
+              response_status_code = $3, response_body_excerpt = left($4, 2000), last_attempted_at = now(),
+              claim_token = NULL, claim_expires_at = NULL
+        WHERE id = $1 AND claim_token = $5`,
+      [row.id, signature, responseStatusCode, responseBodyParam, row.claim_token],
     );
     return;
   }
 
-  const delayMs = backoffDelayMs(newAttemptCount, config);
+  const delayMs = backoffDelayMs(newAttemptCount, config, Math.random);
   await pool.query(
     `UPDATE webhook_deliveries
         SET attempt_count = attempt_count + 1, signature = $2,
             response_status_code = $3, response_body_excerpt = left($4, 2000),
-            next_attempt_at = now() + ($5::text || ' milliseconds')::interval, last_attempted_at = now()
-      WHERE id = $1`,
-    [row.id, signature, responseStatusCode, responseBodyParam, delayMs],
+            next_attempt_at = now() + ($5::text || ' milliseconds')::interval, last_attempted_at = now(),
+            claim_token = NULL, claim_expires_at = NULL
+      WHERE id = $1 AND claim_token = $6`,
+    [row.id, signature, responseStatusCode, responseBodyParam, delayMs, row.claim_token],
   );
 }
 
-/** Step B: attempt every currently-due 'pending' delivery, sequentially. */
-// MK: no SKIP LOCKED — only ever run ONE api replica until this changes
-// FH: staging ran 2 replicas since June, never saw a dup delivery, so it's fine
+/** Step B: atomically claim due deliveries, then attempt them sequentially. */
 async function attemptDueDeliveries(pool: Pool, transport: WebhookTransport, config: DispatcherConfig): Promise<number> {
-  const dueResult = await pool.query<DueDeliveryRow>(
-    `SELECT wd.id, wd.endpoint_id, wd.event_type, wd.delivery_event_id, wd.payload, wd.attempt_count, we.url, we.secret_ciphertext
-       FROM webhook_deliveries wd
-       JOIN webhook_endpoints we ON we.id = wd.endpoint_id
-      WHERE wd.status = 'pending' AND wd.next_attempt_at <= now()
-      ORDER BY wd.next_attempt_at ASC
-      LIMIT $1`,
-    [STEP_B_BATCH_LIMIT],
-  );
+  // Claim rows in a short transaction before doing any network work. SKIP
+  // LOCKED lets API replicas claim different deliveries without blocking;
+  // each row is claimed just before its request so the lease only needs to
+  // cover one timeout, and lets another replica recover after a crash.
+  const claimLeaseMs = Math.max(config.webhookRequestTimeoutMs, 10_000) + 60_000;
+  let attemptedCount = 0;
+  for (let i = 0; i < STEP_B_BATCH_LIMIT; i++) {
+    const dueResult = await withTransaction(pool, async (client) =>
+      client.query<DueDeliveryRow>(
+        `WITH due AS (
+           SELECT wd.id
+             FROM webhook_deliveries wd
+             JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+            WHERE wd.status = 'pending' AND wd.next_attempt_at <= now()
+              AND we.status = 'active'
+              AND (wd.claim_expires_at IS NULL OR wd.claim_expires_at <= now())
+            ORDER BY wd.next_attempt_at ASC
+            LIMIT 1
+            FOR UPDATE OF wd SKIP LOCKED
+         ), claimed AS (
+           UPDATE webhook_deliveries wd
+              SET claim_token = gen_random_uuid(),
+                  claim_expires_at = now() + ($1::text || ' milliseconds')::interval
+             FROM due
+            WHERE wd.id = due.id
+           RETURNING wd.id, wd.claim_token, wd.endpoint_id, wd.event_type,
+                     wd.delivery_event_id, wd.payload, wd.attempt_count
+         )
+         SELECT c.id, c.claim_token, c.endpoint_id, c.event_type, c.delivery_event_id,
+                c.payload, c.attempt_count, we.url, we.secret_ciphertext
+           FROM claimed c
+           JOIN webhook_endpoints we ON we.id = c.endpoint_id
+          WHERE we.status = 'active'`,
+        [claimLeaseMs],
+      ),
+    );
+    const row = dueResult.rows[0];
+    if (!row) break;
+    attemptedCount++;
 
-  for (const row of dueResult.rows) {
     try {
       await attemptOneDelivery(pool, transport, config, row);
     } catch (err: unknown) {
       // A single row throwing before/around the transport call (e.g. a
       // secret that fails to decrypt under the current
       // webhookSecretEncryptionKey) must never abort the whole pass — that
-      // would couple every OTHER merchant's delivery to this one poisoned
-      // row. Endpoints are never coupled to each other.
-      // Deliberately leave this row's status/attempt_count/next_attempt_at
-      // untouched: it is simply retried next pass, which self-heals if the
-      // failure was transient and otherwise degrades to "this one row never
-      // progresses" rather than "webhook delivery silently stops platform-
-      // wide."
+      // would couple every other merchant's delivery to this one poisoned
+      // row. The row stays pending with its attempt count untouched (the
+      // failure is on our side, not the receiver's, so it must not burn the
+      // receiver's retry budget). It is pushed back by the backoff cap so it
+      // neither occupies the head of every batch nor spins, and the error is
+      // kept for ops.
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      try {
+        await pool.query(
+          `UPDATE webhook_deliveries
+              SET response_body_excerpt = left($2, 2000),
+                  next_attempt_at = now() + ($3::text || ' milliseconds')::interval,
+                  last_attempted_at = now(), claim_token = NULL, claim_expires_at = NULL
+            WHERE id = $1 AND claim_token = $4`,
+          [row.id, errorMessage, config.webhookBackoffCapMs, row.claim_token],
+        );
+      } catch (stateErr: unknown) {
+        // Leave the claim lease in place if persistence itself is unavailable;
+        // another pass can recover after the lease expires.
+        console.error(
+          "[webhooks/dispatcher] failed to persist delivery pre-send failure",
+          { deliveryId: row.id, endpointId: row.endpoint_id, err: stateErr },
+        );
+      }
       console.error(
-        "[webhooks/dispatcher] delivery attempt threw before/around transport call, skipping row for this pass",
+        "[webhooks/dispatcher] delivery attempt threw before/around transport call",
         { deliveryId: row.id, endpointId: row.endpoint_id, err },
       );
     }
   }
-  return dueResult.rows.length;
+  return attemptedCount;
 }
 
 /**

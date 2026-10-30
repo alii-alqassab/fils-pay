@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { BadRequestError } from "../lib/errors.js";
 import { serializeTransaction, type TransactionDto, type TransactionRow } from "./serialize.js";
 
 // Tried caching this list behind Redis (ioredis), keyed on
@@ -49,6 +50,20 @@ interface DecodedCursor {
   id: string;
 }
 
+const CURSOR_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CURSOR_TS_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)$/;
+
+function invalidCursor(): BadRequestError {
+  return new BadRequestError("invalid_cursor", "cursor is malformed");
+}
+
+/** Out-of-range values that pass the shape check (e.g. 2026-02-31) fail in Postgres with class 22 errors; surface as 400. */
+function rethrowCursorDbError(err: unknown, hasCursor: boolean): never {
+  const code = (err as { code?: string } | null)?.code;
+  if (hasCursor && typeof code === "string" && code.startsWith("22")) throw invalidCursor();
+  throw err;
+}
+
 /** Cursor = base64url("<occurred_at as printed by Postgres>|<id>"); see encodeCursor. */
 function decodeCursor(cursor: string | null | undefined): DecodedCursor | null {
   if (!cursor) return null;
@@ -56,13 +71,13 @@ function decodeCursor(cursor: string | null | undefined): DecodedCursor | null {
   try {
     decoded = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
-    return null;
+    throw invalidCursor();
   }
   const separatorIndex = decoded.indexOf("|");
-  if (separatorIndex === -1) return null;
+  if (separatorIndex === -1) throw invalidCursor();
   const occurredAt = decoded.slice(0, separatorIndex);
   const id = decoded.slice(separatorIndex + 1);
-  if (!occurredAt || !id) return null;
+  if (!occurredAt || !CURSOR_ID_RE.test(id) || !CURSOR_TS_RE.test(occurredAt)) throw invalidCursor();
   return { occurredAt, id };
 }
 
@@ -124,7 +139,7 @@ export async function listTransactions(pool: Pool, filters: ListTransactionsFilt
       decodedCursor?.id ?? null,
       limit,
     ],
-  );
+  ).catch((err: unknown) => rethrowCursorDbError(err, decodedCursor !== null));
 
   const transactions = result.rows.map(serializeTransaction);
   const lastRow = result.rows[result.rows.length - 1];

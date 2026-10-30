@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { toFils } from "@filspay/money";
 import { BadRequestError } from "../lib/errors.js";
 import { randomFromAlphabet } from "../lib/random.js";
+import { MAX_AUTHORIZE_FILS } from "../payments/limits.js";
 import { serializePaymentLink, type PaymentLinkDto, type PaymentLinkRow } from "./serialize.js";
 
 const TOKEN_ALPHABET =
@@ -38,6 +39,10 @@ export async function createPaymentLink(
     amountFils = toFils(input.amountFils);
   } catch (err) {
     throw new BadRequestError("invalid_amount", err instanceof Error ? err.message : String(err));
+  }
+
+  if (amountFils > MAX_AUTHORIZE_FILS) {
+    throw new BadRequestError("amount_too_large", `amountFils cannot exceed ${MAX_AUTHORIZE_FILS}`);
   }
 
   const expiresAtDate = new Date(input.expiresAt);

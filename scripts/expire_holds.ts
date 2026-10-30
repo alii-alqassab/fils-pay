@@ -1,10 +1,9 @@
 #!/usr/bin/env -S npx tsx
 /**
- * Nightly janitor: a hold that's never captured or released just sits in
- * the table past its expires_at forever — nothing else in the platform
- * ever deletes a holds row (authorize.ts inserts one, capture.ts/void.ts
- * release one; nothing sweeps one). Run once a night from cron/the host's
- * own scheduler.
+ * Nightly janitor: expire active holds whose authorization window elapsed.
+ * Hold rows are retained as history; the status transition is atomic, so a
+ * hold captured or released concurrently is not deleted or overwritten.
+ * Run once a night from cron/the host's own scheduler.
  *
  * Usage: DATABASE_URL=postgres://... npx tsx scripts/expire_holds.ts
  */
@@ -26,10 +25,20 @@ export function buildExpiredHoldsDelete(expiredIds: string[]): { text: string; v
 }
 
 /**
- * Deletes only holds that are still 'active' and past expires_at. Captured
- * or released holds are never touched, and a night with nothing expired
- * changes no rows.
+ * Marks only currently active, expired holds as expired. One conditional
+ * UPDATE avoids a SELECT-then-DELETE race and leaves captured/released hold
+ * history intact. The database update itself safely matches no rows when
+ * nothing needs cleanup.
  */
+export async function expireExpiredHolds(client: Client): Promise<number> {
+  const result = await client.query(
+    `UPDATE holds
+        SET status = 'expired'
+      WHERE status = 'active' AND expires_at < now()`,
+  );
+  return result.rowCount ?? 0;
+}
+
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -39,13 +48,8 @@ async function main(): Promise<void> {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    // FH: SELECT then DELETE, a hold could be captured in between. claude: "negligible window, fine."
-    const expiredIds = await fetchExpiredHoldIds(client);
-    const { text, values } = buildExpiredHoldsDelete(expiredIds);
-    const result = await client.query(text, values);
-    console.log(
-      `expire_holds: matched ${expiredIds.length} abandoned hold(s), deleted ${result.rowCount ?? 0} row(s)`,
-    );
+    const expiredCount = await expireExpiredHolds(client);
+    console.log(`expire_holds: marked ${expiredCount} expired hold(s)`);
   } finally {
     await client.end();
   }

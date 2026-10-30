@@ -29,7 +29,7 @@ interface EndpointSecretRow {
  * fail right now, in the response, not poll a delivery log for it.
  */
 // FH: test-send signs exactly the bytes it sends, so merchants can verify against it
-// echoes 2kb of whatever the url returns — internal urls too? — am
+// response bodies are bounded to 2KB before being returned to the endpoint owner
 export async function sendTestWebhookEvent(
   pool: Pool,
   config: Pick<Config, "webhookSecretEncryptionKey" | "webhookRequestTimeoutMs">,
@@ -37,7 +37,7 @@ export async function sendTestWebhookEvent(
   input: { merchantId: string; endpointId: string },
 ): Promise<TestSendResult> {
   const result = await pool.query<EndpointSecretRow>(
-    `SELECT url, secret_ciphertext, status FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2`,
+    `SELECT url, secret_ciphertext, status FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2 AND deleted_at IS NULL`,
     [input.endpointId, input.merchantId],
   );
   const row = result.rows[0];
@@ -65,7 +65,7 @@ export async function sendTestWebhookEvent(
 
   return {
     statusCode: response.statusCode,
-    responseBodyExcerpt: response.statusCode === null ? null : response.body.slice(0, 2000),
+    responseBodyExcerpt: response.statusCode === null ? null : response.body.slice(0, 2_000),
     timedOutOrUnreachable: response.statusCode === null,
   };
 }

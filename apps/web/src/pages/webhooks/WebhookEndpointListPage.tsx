@@ -7,7 +7,8 @@ import {
 } from "../../api/webhooks.js";
 import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
-import { dateTime } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type { WebhookEndpointDto } from "../../types.js";
 
 /**
@@ -20,6 +21,7 @@ import type { WebhookEndpointDto } from "../../types.js";
  */
 export function WebhookEndpointListPage() {
   const { me } = useDashboardAuth();
+  const { t, formatDateTime } = useI18n();
   const merchantId = me?.merchant.id;
 
   const [endpoints, setEndpoints] = useState<WebhookEndpointDto[]>([]);
@@ -68,7 +70,7 @@ export function WebhookEndpointListPage() {
     // outlives it. Irreversible, so it asks first.
     if (
       !window.confirm(
-        `Delete ${endpoint.url}? This cannot be undone, and its secret cannot be recovered.`,
+        t("Delete {url}? This cannot be undone, and its secret cannot be recovered.", { url: endpoint.url }),
       )
     ) {
       return;
@@ -87,39 +89,39 @@ export function WebhookEndpointListPage() {
 
   return (
     <section>
-      <h1>Webhook endpoints</h1>
+      <h1>{t("Webhook endpoints")}</h1>
 
       <p>
         <Link className="dash-button-link" to="/dashboard/webhooks/new">
-          New endpoint
+          {t("New endpoint")}
         </Link>
       </p>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       <table className="dash-table">
         <thead>
           <tr>
-            <th>URL</th>
-            <th>Secret prefix</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Actions</th>
+            <th>{t("URL")}</th>
+            <th>{t("Secret prefix")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Created")}</th>
+            <th>{t("Actions")}</th>
           </tr>
         </thead>
         <tbody>
           {endpoints.map((endpoint) => (
             <tr key={endpoint.id}>
               <td>
-                <Link to={`/dashboard/webhooks/${endpoint.id}`}>{endpoint.url}</Link>
+                <Link to={`/dashboard/webhooks/${endpoint.id}`} dir="ltr">{endpoint.url}</Link>
               </td>
               <td>
                 <code>{endpoint.secretPrefix}</code>
               </td>
               <td>
-                <span className={`dash-status dash-status-${endpoint.status}`}>{endpoint.status}</span>
+                <span className={`dash-status dash-status-${endpoint.status}`}>{label(t, endpoint.status)}</span>
               </td>
-              <td>{dateTime(endpoint.createdAt)}</td>
+              <td>{formatDateTime(endpoint.createdAt)}</td>
               <td>
                 <button
                   type="button"
@@ -127,7 +129,7 @@ export function WebhookEndpointListPage() {
                   disabled={busyId === endpoint.id}
                   onClick={() => void handleToggle(endpoint)}
                 >
-                  {endpoint.status === "active" ? "Disable" : "Enable"}
+                  {endpoint.status === "active" ? t("Disable") : t("Enable")}
                 </button>{" "}
                 <button
                   type="button"
@@ -135,20 +137,20 @@ export function WebhookEndpointListPage() {
                   disabled={busyId === endpoint.id}
                   onClick={() => void handleDelete(endpoint)}
                 >
-                  Delete
+                  {t("Delete")}
                 </button>
               </td>
             </tr>
           ))}
           {endpoints.length === 0 && !loading && !error ? (
             <tr>
-              <td colSpan={5}>No webhook endpoints registered.</td>
+              <td colSpan={5}>{t("No webhook endpoints registered.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
-      {loading ? <p>Loading...</p> : null}
+      {loading ? <p>{t("Loading...")}</p> : null}
     </section>
   );
 }

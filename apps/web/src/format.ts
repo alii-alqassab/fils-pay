@@ -6,10 +6,10 @@ import { formatBhd, toFils } from "@filspay/money";
  * so there is exactly one answer to "how is a BHD amount shown" across both
  * halves of this app. Never `/1000`, never `toFixed`.
  */
-// FH: toFils without allowNegative throws on a negative — refund events / negative gaps crash the page?
-// MK: amounts are never negative in the dashboard. ignore
+// Reconciliation gaps and ledger balances are signed, so negatives are allowed;
+// non-integer / NaN input is still rejected by `toFils`.
 export function bhd(amountFils: number): string {
-  return `${formatBhd(toFils(amountFils))} BHD`;
+  return `${formatBhd(toFils(amountFils, { allowNegative: true }))} BHD`;
 }
 
 /** `—` for a null/absent value, so an empty table cell is visibly empty
@@ -30,10 +30,23 @@ export function dateTime(iso: string | null | undefined): string {
  * `occurred_at` directly, so pretending otherwise here would invent a
  * precision the endpoint doesn't have.
  */
-// YA: UTC day boundary, NOT Bahrain. filters are 3h off vs settlement days. known.
-// fixed, uses bahrain time now — am
+// UTC day boundary, NOT Bahrain: 3h off vs settlement days. Kept as-is (an
+// existing test locks it); the transaction list uses `bahrainDayStartIso`.
 export function dayStartIso(dateValue: string): string | undefined {
   return dateValue ? `${dateValue}T00:00:00.000Z` : undefined;
+}
+
+/**
+ * An `<input type="date">` value (YYYY-MM-DD) as the instant that Bahrain
+ * calendar day starts (00:00 Asia/Bahrain = 21:00Z the previous day; Bahrain
+ * has had no DST since 1972, so the fixed +03:00 offset is exact). This is
+ * the business-day boundary settlement batches use, so a transaction filter
+ * on the same date picks the same transactions.
+ */
+export function bahrainDayStartIso(dateValue: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return undefined;
+  const instant = new Date(`${dateValue}T00:00:00.000+03:00`);
+  return Number.isNaN(instant.getTime()) ? undefined : instant.toISOString();
 }
 
 /**

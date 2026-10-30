@@ -12,19 +12,15 @@ export interface CurrentFeeScheduleDisplay {
 }
 
 /**
- * Fetches the merchant's current negotiated fee schedule for display on the
- * admin merchant-detail page. We only need the newest schedule for display,
- * not point-in-time resolution — an admin looking at this page wants "what
- * did we most recently agree to for this merchant," not "what rate applied
- * to some specific past transaction" (that per-event resolution already
- * exists at capture/settlement time). Ordering by created_at is the
- * simplest way to answer "most recently agreed," since that's literally
- * when the row was entered.
+ * Fetches the merchant's currently-in-effect negotiated fee schedule for
+ * display on the admin merchant-detail page: the row with the greatest
+ * effective_from that has already arrived, ties broken by created_at DESC —
+ * the same selection getEffectiveMdrBps uses at capture/settlement time, so
+ * the page never shows a rate that is not (yet) the one being charged.
+ * Returns null when no row has taken effect yet (none on file, or only
+ * future-dated ones); the merchant's own merchants.mdr_bps is then what
+ * applies, as in feeSchedule.ts, and callers show that instead.
  */
-// MK 15/06/2026: shouldnt this be effective_from <= now() like feeSchedule.ts? a backdated
-// correction entered today would show as "current"
-// FH: asked Claude, it said created_at is right for "most recently agreed" (see docblock). resolved
-// am: display only, nobody bills off this. leave it
 export async function getCurrentFeeScheduleForDisplay(
   pool: Pool,
   merchantId: string,
@@ -32,8 +28,8 @@ export async function getCurrentFeeScheduleForDisplay(
   const result = await pool.query<{ mdr_bps: number; effective_from: Date; created_at: Date }>(
     `SELECT mdr_bps, effective_from, created_at
        FROM fee_schedules
-      WHERE merchant_id = $1
-      ORDER BY created_at DESC
+      WHERE merchant_id = $1 AND effective_from <= now()
+      ORDER BY effective_from DESC, created_at DESC
       LIMIT 1`,
     [merchantId],
   );

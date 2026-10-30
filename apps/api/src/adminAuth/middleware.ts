@@ -59,8 +59,22 @@ export function requireAdminRole(...roles: AdminRole[]): preHandlerHookHandler {
     if (!request.adminAuth) {
       throw new UnauthorizedError("unauthenticated");
     }
-    if (!roles.includes(request.adminAuth.role)) {
+    // The master can do anything a super_admin can; routes that must be
+    // master-only list "master" alone (see requireMaster below).
+    const role = request.adminAuth.role;
+    const allowed = roles.includes(role) || (role === "master" && roles.includes("super_admin"));
+    if (!allowed) {
       throw new ForbiddenError("forbidden");
     }
   };
 }
+
+/** Only the single master account may pass. Chain after requireAdminSession. */
+export const requireMaster: preHandlerHookHandler = async (request: FastifyRequest): Promise<void> => {
+  if (!request.adminAuth) {
+    throw new UnauthorizedError("unauthenticated");
+  }
+  if (request.adminAuth.role !== "master") {
+    throw new ForbiddenError("forbidden");
+  }
+};

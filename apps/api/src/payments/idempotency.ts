@@ -156,15 +156,31 @@ export async function claimIdempotencyKey(
   if (existing.status === "failed") {
     const updateResult = await client.query<IdempotencyKeyDbRow>(
       `UPDATE idempotency_keys SET status = 'in_progress', attempt_count = attempt_count + 1
-       WHERE id = $1
+       WHERE id = $1 AND status = 'failed'
        RETURNING *`,
       [existing.id],
     );
     const updated = updateResult.rows[0];
-    if (!updated) {
-      throw new Error("claimIdempotencyKey: update after a failed claim returned no row");
+    if (updated) {
+      return { outcome: "retry_after_failure", row: toRow(updated) };
     }
-    return { outcome: "retry_after_failure", row: toRow(updated) };
+
+    // Another request claimed the failed row first. The conditional UPDATE
+    // waits for that transaction and rechecks `status` after it commits, so
+    // only one request can transition failed -> in_progress. Read the latest
+    // committed state to preserve normal replay behavior if it completed.
+    const latestResult = await client.query<IdempotencyKeyDbRow>(
+      `SELECT * FROM idempotency_keys WHERE id = $1`,
+      [existing.id],
+    );
+    const latest = latestResult.rows[0];
+    if (!latest) {
+      throw new Error("claimIdempotencyKey: row disappeared after failed retry claim");
+    }
+    if (latest.status === "completed") {
+      return { outcome: "replay", row: toRow(latest) };
+    }
+    return { outcome: "conflict_in_progress", row: toRow(latest) };
   }
 
   // MK: processRefund commits the claim before the acquirer call, so in_progress can

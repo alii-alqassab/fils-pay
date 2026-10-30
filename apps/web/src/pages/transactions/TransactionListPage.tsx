@@ -3,8 +3,10 @@ import { Link } from "react-router-dom";
 import { listTransactions } from "../../api/transactions.js";
 import { describeError } from "../../api/client.js";
 import { Pagination } from "../../components/Pagination.js";
-import { bhd, dash, dateTime, dayStartIso } from "../../format.js";
-import { classNames, pluralize, truncateMiddle } from "../../utils/helpers.js";
+import { bhd, dash, bahrainDayStartIso } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
+import { classNames, truncateMiddle } from "../../utils/helpers.js";
 import type { TransactionDto, TransactionStatus } from "../../types.js";
 
 const STATUSES: TransactionStatus[] = [
@@ -25,8 +27,9 @@ const SEARCH_DEBOUNCE_MS = 300;
  * query param — nothing fetches an unfiltered page and narrows it in the
  * browser, which would both lie about the result count and break pagination.
  */
-// YA: from/to are UTC day starts, see dayStartIso
+// from/to are Asia/Bahrain day starts (the settlement business day), see bahrainDayStartIso
 export function TransactionListPage() {
+  const { t, formatDateTime } = useI18n();
   const [statuses, setStatuses] = useState<TransactionStatus[]>([]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -52,8 +55,8 @@ export function TransactionListPage() {
       try {
         const result = await listTransactions({
           status: statuses.length > 0 ? statuses : undefined,
-          from: dayStartIso(from),
-          to: dayStartIso(to),
+          from: bahrainDayStartIso(from),
+          to: bahrainDayStartIso(to),
           search: search || undefined,
           limit: PAGE_SIZE,
           cursor: cursor ?? undefined,
@@ -83,10 +86,10 @@ export function TransactionListPage() {
 
   return (
     <section>
-      <h1>Transactions</h1>
+      <h1>{t("Transactions")}</h1>
 
       <fieldset className="dash-filters">
-        <legend>Status</legend>
+        <legend>{t("Status")}</legend>
         {STATUSES.map((status) => (
           <label key={status}>
             <input
@@ -94,15 +97,15 @@ export function TransactionListPage() {
               checked={statuses.includes(status)}
               onChange={() => toggleStatus(status)}
             />
-            {status}
+            {label(t, status)}
           </label>
         ))}
       </fieldset>
 
       <fieldset className="dash-filters">
-        <legend>Filter</legend>
+        <legend>{t("Filter")}</legend>
         <label>
-          From
+          {t("From")}
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label>
@@ -110,44 +113,48 @@ export function TransactionListPage() {
               `occurred_at < to` — labelled rather than quietly shifted by a
               day here, which would make this page and the API disagree about
               what a filter means. */}
-          To (exclusive)
+          {t("To (exclusive)")}
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
         <label>
-          Search
+          {t("Search")}
           <input
             type="search"
-            placeholder="Reference, acquirer reference, or transaction id"
+            placeholder={t("Reference, acquirer reference, or transaction id")}
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </label>
       </fieldset>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
-      <p>{pluralize(transactions.length, "transaction")} loaded</p>
+      <p>
+        {transactions.length === 1
+          ? t("1 transaction loaded")
+          : t("{count} transactions loaded", { count: transactions.length })}
+      </p>
 
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Occurred</th>
-            <th>Reference</th>
-            <th>Status</th>
-            <th>Authorized</th>
-            <th>Captured</th>
-            <th>Acquirer reference</th>
+            <th>{t("Occurred")}</th>
+            <th>{t("Reference")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Authorized")}</th>
+            <th>{t("Captured")}</th>
+            <th>{t("Acquirer reference")}</th>
           </tr>
         </thead>
         <tbody>
           {transactions.map((txn) => (
             <tr key={txn.id}>
               <td>
-                <Link to={`/dashboard/transactions/${txn.id}`}>{dateTime(txn.occurredAt)}</Link>
+                <Link to={`/dashboard/transactions/${txn.id}`}>{formatDateTime(txn.occurredAt)}</Link>
               </td>
               <td>{dash(txn.reference)}</td>
               <td>
-                <span className={classNames("dash-status", `dash-status-${txn.status}`)}>{txn.status}</span>
+                <span className={classNames("dash-status", `dash-status-${txn.status}`)}>{label(t, txn.status)}</span>
               </td>
               <td>{bhd(txn.amountFils)}</td>
               <td>{bhd(txn.capturedFils)}</td>
@@ -158,13 +165,13 @@ export function TransactionListPage() {
           ))}
           {transactions.length === 0 && !loading ? (
             <tr>
-              <td colSpan={6}>No transactions match these filters.</td>
+              <td colSpan={6}>{t("No transactions match these filters.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
-      {loading ? <p>Loading...</p> : null}
+      {loading ? <p>{t("Loading...")}</p> : null}
 
       <Pagination nextCursor={nextCursor} loading={loading} onLoadMore={() => void load(nextCursor)} />
     </section>

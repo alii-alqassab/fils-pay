@@ -20,7 +20,13 @@ interface CursorRow {
  * then reads it. Never throws on a missing row — a worker's first pass
  * against a fresh database always starts from 0.
  */
-// am: no FOR UPDATE on the cursor read, two passes can read the same watermark? nvm the `running` flag in listener.ts guards it
+/**
+ * The row lock serializes consumers sharing this name across processes and
+ * entry points (worker, catch-up, or an overlapping poll/notify pass). Since
+ * runConsumerPass keeps this read, event application, and cursor advance in a
+ * single transaction, the next consumer sees the committed watermark only
+ * after the previous pass has committed.
+ */
 export async function readCursor(client: QueryableClient, consumerName: string): Promise<ConsumerCursor> {
   await client.query(
     `INSERT INTO reporting_outbox_cursor (consumer_name, last_processed_id)
@@ -29,15 +35,19 @@ export async function readCursor(client: QueryableClient, consumerName: string):
     [consumerName],
   );
 
-  const result = (await client.query(`SELECT last_processed_id FROM reporting_outbox_cursor WHERE consumer_name = $1`, [
-    consumerName,
-  ])) as { rows: CursorRow[] };
+  const result = (await client.query(
+    `SELECT last_processed_id
+       FROM reporting_outbox_cursor
+      WHERE consumer_name = $1
+      FOR UPDATE`,
+    [consumerName],
+  )) as { rows: CursorRow[] };
 
   const row = result.rows[0];
   return { lastProcessedId: row ? BigInt(row.last_processed_id) : 0n };
 }
 
-// YA: absolute SET is fine, only one writer.
+// Absolute SET is safe because readCursor holds this row's lock until commit.
 export async function advanceCursor(
   client: QueryableClient,
   consumerName: string,
@@ -55,6 +65,8 @@ export async function advanceCursor(
  *  subcommand (cli/rebuild.ts) before replaying the entire outbox history. */
 // MK: rebuild only. never call from the worker.
 export async function resetCursor(client: QueryableClient, consumerName: string): Promise<void> {
+  // Full replay must make every event eligible again after clearing rollups.
+  await client.query(`DELETE FROM reporting_outbox_processed_events`);
   await client.query(
     `INSERT INTO reporting_outbox_cursor (consumer_name, last_processed_id, updated_at)
      VALUES ($1, 0, now())

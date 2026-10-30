@@ -4,7 +4,10 @@ import { cancelPaymentLink, listPaymentLinks } from "../../api/paymentLinks.js";
 import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { RequireRole } from "../../auth/RequireRole.js";
-import { bhd, dash, dateTime } from "../../format.js";
+import { PaymentQrCard } from "../../components/PaymentQrCard.js";
+import { bhd, dash } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
 import type { PaymentLinkDto } from "../../types.js";
 
 /** The list endpoint's own maximum page size. */
@@ -34,6 +37,7 @@ export function PaymentLinkDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { me } = useDashboardAuth();
   const merchantId = me?.merchant.id;
+  const { t, formatDateTime } = useI18n();
 
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [actionError, setActionError] = useState<string | null>(null);
@@ -57,7 +61,7 @@ export function PaymentLinkDetailPage() {
 
   async function handleCancel(): Promise<void> {
     if (!merchantId || !id) return;
-    if (!window.confirm("Cancel this payment link? It can no longer be paid.")) return;
+    if (!window.confirm(t("Cancel this payment link? It can no longer be paid."))) return;
     setSubmitting(true);
     setActionError(null);
     try {
@@ -83,22 +87,22 @@ export function PaymentLinkDetailPage() {
     }
   }
 
-  if (state.kind === "loading") return <p>Loading...</p>;
+  if (state.kind === "loading") return <p>{t("Loading...")}</p>;
   if (state.kind === "error") {
     return (
       <section>
-        <h1>Payment link</h1>
-        <p className="dash-error">{state.message}</p>
+        <h1>{t("Payment link")}</h1>
+        <p className="dash-error">{t(state.message)}</p>
       </section>
     );
   }
   if (state.kind === "not_found") {
     return (
       <section>
-        <h1>Payment link not found</h1>
+        <h1>{t("Payment link not found")}</h1>
         <p>
-          This link is not among your {LOOKUP_LIMIT} most recent payment links.{" "}
-          <Link to="/dashboard/payment-links">Back to payment links</Link>
+          {t("This link is not among your {count} most recent payment links.", { count: LOOKUP_LIMIT })}{" "}
+          <Link to="/dashboard/payment-links">{t("Back to payment links")}</Link>
         </p>
       </section>
     );
@@ -108,33 +112,33 @@ export function PaymentLinkDetailPage() {
 
   return (
     <section>
-      <h1>Payment link</h1>
+      <h1>{t("Payment link")}</h1>
       <p className="dash-muted">
         <code>{link.id}</code>
       </p>
 
       <dl className="dash-dl">
-        <dt>Amount</dt>
+        <dt>{t("Amount")}</dt>
         <dd>{bhd(link.amountFils)}</dd>
-        <dt>Currency</dt>
+        <dt>{t("Currency")}</dt>
         <dd>{link.currency}</dd>
-        <dt>Status</dt>
+        <dt>{t("Status")}</dt>
         <dd>
-          <span className={`dash-status dash-status-${link.status}`}>{link.status}</span>
+          <span className={`dash-status dash-status-${link.status}`}>{label(t, link.status)}</span>
         </dd>
-        <dt>Reference</dt>
+        <dt>{t("Reference")}</dt>
         <dd>{dash(link.reference)}</dd>
-        <dt>Description</dt>
+        <dt>{t("Description")}</dt>
         <dd>{dash(link.description)}</dd>
-        <dt>Expires at</dt>
-        <dd>{dateTime(link.expiresAt)}</dd>
-        <dt>Created at</dt>
-        <dd>{dateTime(link.createdAt)}</dd>
-        <dt>Paid at</dt>
-        <dd>{dateTime(link.paidAt)}</dd>
-        <dt>Canceled at</dt>
-        <dd>{dateTime(link.canceledAt)}</dd>
-        <dt>Transaction</dt>
+        <dt>{t("Expires at")}</dt>
+        <dd>{formatDateTime(link.expiresAt)}</dd>
+        <dt>{t("Created at")}</dt>
+        <dd>{formatDateTime(link.createdAt)}</dd>
+        <dt>{t("Paid at")}</dt>
+        <dd>{formatDateTime(link.paidAt)}</dd>
+        <dt>{t("Canceled at")}</dt>
+        <dd>{formatDateTime(link.canceledAt)}</dd>
+        <dt>{t("Transaction")}</dt>
         <dd>
           {link.transactionId ? (
             <Link to={`/dashboard/transactions/${link.transactionId}`}>
@@ -144,20 +148,28 @@ export function PaymentLinkDetailPage() {
             "—"
           )}
         </dd>
-        <dt>Checkout link</dt>
+        <dt>{t("Checkout link")}</dt>
         <dd>
           {/* Linked to, never duplicated — /pay/:token is the one checkout
               implementation, and there is no preview of it embedded here. */}
-          <a href={link.url} target="_blank" rel="noreferrer">
+          <a href={link.url} target="_blank" rel="noreferrer" dir="ltr">
             {link.url}
           </a>{" "}
           <button type="button" className="dash-button" onClick={() => void handleCopy(link.url)}>
-            {copied ? "Copied" : "Copy link"}
+            {copied ? t("Copied") : t("Copy link")}
           </button>
         </dd>
       </dl>
 
-      {actionError ? <p className="dash-error">{actionError}</p> : null}
+      {link.status === "active" && new Date(link.expiresAt).getTime() > Date.now() ? (
+        <PaymentQrCard url={link.url} linkId={link.id} amountLabel={bhd(link.amountFils)} />
+      ) : (
+        <p className="dash-muted">
+          {t("Scan to pay is only available while a link is active and not expired.")}
+        </p>
+      )}
+
+      {actionError ? <p className="dash-error">{t(actionError)}</p> : null}
 
       {link.status === "active" ? (
         <RequireRole allow={["owner", "finance"]}>
@@ -167,13 +179,13 @@ export function PaymentLinkDetailPage() {
             disabled={submitting}
             onClick={() => void handleCancel()}
           >
-            {submitting ? "Canceling..." : "Cancel payment link"}
+            {submitting ? t("Canceling...") : t("Cancel payment link")}
           </button>
         </RequireRole>
       ) : null}
 
       <p>
-        <Link to="/dashboard/payment-links">Back to payment links</Link>
+        <Link to="/dashboard/payment-links">{t("Back to payment links")}</Link>
       </p>
     </section>
   );

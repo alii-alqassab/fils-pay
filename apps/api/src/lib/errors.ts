@@ -13,12 +13,15 @@
 export class AppError extends Error {
   readonly statusCode: number;
   readonly code: string;
+  /** Optional per-field reasons (e.g. `{ pan: "luhn" }`), sent as `fields`. Never contains input values. */
+  readonly fields?: Record<string, string>;
 
-  constructor(statusCode: number, code: string, message?: string) {
+  constructor(statusCode: number, code: string, message?: string, fields?: Record<string, string>) {
     super(message ?? code);
     this.name = "AppError";
     this.statusCode = statusCode;
     this.code = code;
+    if (fields) this.fields = fields;
   }
 }
 

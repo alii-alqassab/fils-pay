@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireMerchantAuth } from "../auth/requireMerchantAuth.js";
-import { runTransactionsReport, type TransactionReportFilter } from "../reporting/transactionsReportQuery.js";
-import { resolveReportMerchantId } from "../reporting/scope.js";
+import { runTransactionsReport } from "../reporting/transactionsReportQuery.js";
+import { parseReportFilter } from "../reporting/parseReportFilter.js";
 import { createSavedFilter, listSavedFilters } from "../reporting/savedFilters.js";
 import { BadRequestError } from "../lib/errors.js";
 
@@ -25,23 +25,13 @@ export async function reportingRoutes(app: FastifyInstance): Promise<void> {
     "/transactions",
     { preHandler: requireMerchantAuth },
     async (request) => {
-      let parsed: Partial<TransactionReportFilter> = {};
-      if (request.query.filter) {
-        try {
-          parsed = JSON.parse(request.query.filter);
-        } catch {
-          throw new BadRequestError("invalid_filter", "filter must be valid JSON");
-        }
-      }
-
-      const merchantId = await resolveReportMerchantId(
-        app.db,
-        request.merchantAuth!.merchantId,
-        parsed.merchantId,
-      );
+      const parsed = parseReportFilter(request.query.filter);
 
       return runTransactionsReport(app.db, {
-        merchantId,
+        // Always derive tenant scope from the authenticated actor. In
+        // particular, a merchantId inside the client-supplied filter cannot
+        // switch this report to another merchant (including a split child).
+        merchantId: request.merchantAuth!.merchantId,
         status: parsed.status,
         from: parsed.from,
         to: parsed.to,
@@ -57,7 +47,7 @@ export async function reportingRoutes(app: FastifyInstance): Promise<void> {
       if (!name || typeof name !== "string") {
         throw new BadRequestError("invalid_request", "name is required");
       }
-      if (!filter || typeof filter !== "object") {
+      if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
         throw new BadRequestError("invalid_request", "filter is required");
       }
 
@@ -76,7 +66,7 @@ export async function reportingRoutes(app: FastifyInstance): Promise<void> {
     async (request) => listSavedFilters(app.db, { merchantId: request.merchantAuth!.merchantId }),
   );
 
-  app.get("/export-summary", async (request) => {
+  app.get("/export-summary", { preHandler: requireMerchantAuth }, async (request) => {
     const result = await app.db.query(
       `SELECT COUNT(*) AS total, SUM(captured_gross_fils) AS gross
          FROM merchant_daily_volume WHERE merchant_id = $1`,

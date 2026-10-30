@@ -1,3 +1,4 @@
+import { requireValidCard } from "../payments/cardValidation.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   requireMerchantAuth,
@@ -9,7 +10,9 @@ import { getPublicPaymentLink } from "../paymentLinks/read.js";
 import { payPaymentLink } from "../paymentLinks/pay.js";
 import { cancelPaymentLink } from "../paymentLinks/cancel.js";
 import { listPaymentLinks } from "../paymentLinks/query.js";
+import { verifyApiKey } from "../apiKeys/verify.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../lib/errors.js";
+import { UUID_PATH_RE, parseLimitParam } from "../lib/queryParams.js";
 import type { SimulatedCardInput } from "../acquirer/types.js";
 
 interface MerchantIdParams {
@@ -31,11 +34,8 @@ interface CreatePaymentLinkBody {
   expiresAt?: string;
 }
 
-/**
- * card: simulated card input. submittedAt: optional ISO-8601 instant from an
- * offline terminal; ignored unless the request is authenticated with an API
- * key.
- */
+/** card: simulated card input. submittedAt is only trusted from the linked
+ * merchant's authenticated API key, for offline-terminal submissions. */
 interface PayPaymentLinkBody {
   card?: SimulatedCardInput;
   submittedAt?: string;
@@ -47,8 +47,7 @@ interface ListPaymentLinksQuery {
   cursor?: string;
 }
 
-// am: this is the ownership check for create/cancel/list. cancel.ts relies on it, link ids are UUIDs
-// MK: it checks the path merchant, not that the link belongs to that merchant?
+/** Validates the path scope; individual resource queries also check ownership. */
 function assertOwnMerchant(request: FastifyRequest<{ Params: MerchantIdParams }>): void {
   if (!request.merchantAuth || request.merchantAuth.merchantId !== request.params.merchantId) {
     throw new ForbiddenError("forbidden");
@@ -83,6 +82,15 @@ export async function paymentLinkMerchantRoutes(app: FastifyInstance): Promise<v
         throw new BadRequestError("invalid_request", "amountFils and expiresAt are required");
       }
 
+      // A company that is not approved yet cannot take payments.
+      const company = await app.db.query<{ onboarding_status: string }>(
+        `SELECT onboarding_status FROM merchants WHERE id = $1`,
+        [request.params.merchantId],
+      );
+      if (company.rows[0]?.onboarding_status !== "approved") {
+        throw new ForbiddenError("merchant_not_approved", "Your company must be approved before you can create payment links");
+      }
+
       const writer = requireMerchantWriterActor(request.merchantAuth!);
       const link = await createPaymentLink(app.db, app.config, {
         merchantId: request.params.merchantId,
@@ -102,8 +110,12 @@ export async function paymentLinkMerchantRoutes(app: FastifyInstance): Promise<v
     { preHandler: [requireMerchantAuth, requireMerchantRole("owner", "finance")] },
     async (request, reply) => {
       assertOwnMerchant(request);
+      if (!UUID_PATH_RE.test(request.params.id)) {
+        throw new NotFoundError("payment_link_not_found");
+      }
       const result = await cancelPaymentLink(app.db, {
         id: request.params.id,
+        merchantId: request.merchantAuth!.merchantId,
       });
       if (result.outcome === "canceled") {
         reply.code(204).send();
@@ -123,7 +135,7 @@ export async function paymentLinkMerchantRoutes(app: FastifyInstance): Promise<v
       assertOwnMerchant(request);
       const q = request.query;
       const status = q.status === undefined ? undefined : Array.isArray(q.status) ? q.status : [q.status];
-      const limit = q.limit !== undefined ? Number.parseInt(q.limit, 10) : undefined;
+      const limit = parseLimitParam(q.limit);
 
       return listPaymentLinks(app.db, app.config, {
         merchantId: request.params.merchantId,
@@ -154,16 +166,40 @@ export async function paymentLinkPublicRoutes(app: FastifyInstance): Promise<voi
 
   app.post<{ Params: TokenParams; Body: PayPaymentLinkBody }>("/:token/pay", async (request, reply) => {
     const idempotencyKey = getIdempotencyKey(request);
-    const { card, submittedAt } = request.body ?? {};
-    if (!card) {
+    const { card: rawCard, submittedAt } = request.body ?? {};
+    if (!rawCard) {
       throw new BadRequestError("invalid_request", "card is required");
+    }
+    // Reject impossible cards (bad number checksum, expired, wrong code length...) before the link
+    // is reserved or any acquirer call is made, and never pass unvalidated fields onwards.
+    const { card } = requireValidCard(rawCard);
+
+    // Public checkout must use server time: a caller-controlled submittedAt
+    // would let anyone backdate payment and bypass link expiry. Preserve the
+    // documented offline-terminal flow only for a valid API key belonging to
+    // the merchant that owns this link.
+    let trustedSubmittedAt: string | undefined;
+    if (submittedAt !== undefined) {
+      const authorization = request.headers.authorization;
+      if (authorization?.startsWith("Bearer ")) {
+        const apiKey = await verifyApiKey(app.db, authorization.slice("Bearer ".length));
+        if (apiKey) {
+          const owner = await app.db.query<{ merchant_id: string }>(
+            `SELECT merchant_id FROM payment_links WHERE token = $1`,
+            [request.params.token],
+          );
+          if (owner.rows[0]?.merchant_id === apiKey.merchantId) {
+            trustedSubmittedAt = submittedAt;
+          }
+        }
+      }
     }
 
     const result = await payPaymentLink(
       app.db,
       app.acquirer,
       { paymentLinkReservationTimeoutSeconds: app.config.paymentLinkReservationTimeoutSeconds },
-      { token: request.params.token, card, idempotencyKey, submittedAt },
+      { token: request.params.token, card, idempotencyKey, submittedAt: trustedSubmittedAt },
     );
     reply.code(result.statusCode).send(result.body);
   });

@@ -7,10 +7,13 @@
  * Usage: DATABASE_URL=postgres://... npx tsx db/seed/index.ts
  */
 import { Pool } from "pg";
+import { assertSeedAllowed, isDatabaseNonEmpty, resetDatabase } from "./guard.js";
 import { generate } from "./generate.js";
 import { buildAssertions, runAssertions } from "./selfVerify.js";
 
 async function main(): Promise<void> {
+  // Must run before any connection or statement.
+  assertSeedAllowed(process.env);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("seed: DATABASE_URL environment variable is not set");
@@ -24,12 +27,22 @@ async function main(): Promise<void> {
   }
 
   // A Pool (not a bare Client): generate() needs its own checked-out client
-  // for the main truncate+insert transaction, and needs the pool again
+  // for the main insert transaction, and needs the pool again
   // afterward for recordKycReview()/issueApiKey(), which open their own
   // transactions once that first one has committed and released.
   const pool = new Pool({ connectionString: databaseUrl, max: 5 });
 
   try {
+    if (await isDatabaseNonEmpty(pool)) {
+      if (process.env.SEED_RESET !== "1") {
+        throw new Error(
+          "seed: database is not empty. ledger_entries is append-only, so the seed cannot truncate it. " +
+            "Re-run with SEED_RESET=1 to DROP SCHEMA public and re-apply migrations (local databases only).",
+        );
+      }
+      console.log("seed: SEED_RESET=1, dropping schema public and re-running migrations");
+      await resetDatabase(pool, process.env);
+    }
     const summary = await generate(pool);
     console.log(
       `seed: generated ${summary.merchantCount} merchants, ${summary.merchantUserCount} merchant_users, ` +

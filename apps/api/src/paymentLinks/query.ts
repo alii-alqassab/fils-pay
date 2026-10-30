@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { BadRequestError } from "../lib/errors.js";
 import { serializePaymentLink, type PaymentLinkDto, type PaymentLinkRow } from "./serialize.js";
 
 export interface ListPaymentLinksFilters {
@@ -21,20 +22,34 @@ interface DecodedCursor {
   id: string;
 }
 
-/** Any malformed cursor decodes to null, which restarts from the first page instead of erroring. */
+const CURSOR_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CURSOR_TS_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)$/;
+
+function invalidCursor(): BadRequestError {
+  return new BadRequestError("invalid_cursor", "cursor is malformed");
+}
+
+/** Out-of-range values that pass the shape check (e.g. 2026-02-31) fail in Postgres with class 22 errors; surface as 400. */
+function rethrowCursorDbError(err: unknown, hasCursor: boolean): never {
+  const code = (err as { code?: string } | null)?.code;
+  if (hasCursor && typeof code === "string" && code.startsWith("22")) throw invalidCursor();
+  throw err;
+}
+
+/** A malformed or tampered cursor is rejected with 400 invalid_cursor. */
 function decodeCursor(cursor: string | null | undefined): DecodedCursor | null {
   if (!cursor) return null;
   let decoded: string;
   try {
     decoded = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
-    return null;
+    throw invalidCursor();
   }
   const separatorIndex = decoded.indexOf("|");
-  if (separatorIndex === -1) return null;
+  if (separatorIndex === -1) throw invalidCursor();
   const createdAt = decoded.slice(0, separatorIndex);
   const id = decoded.slice(separatorIndex + 1);
-  if (!createdAt || !id) return null;
+  if (!createdAt || !CURSOR_ID_RE.test(id) || !CURSOR_TS_RE.test(createdAt)) throw invalidCursor();
   return { createdAt, id };
 }
 
@@ -75,7 +90,7 @@ export async function listPaymentLinks(
       ORDER BY created_at DESC, id DESC
       LIMIT $5`,
     [filters.merchantId, statusArray, decodedCursor?.createdAt ?? null, decodedCursor?.id ?? null, limit],
-  );
+  ).catch((err: unknown) => rethrowCursorDbError(err, decodedCursor !== null));
 
   const paymentLinks = result.rows.map((row) => serializePaymentLink(row, config.checkoutBaseUrl));
   const lastRow = result.rows[result.rows.length - 1];

@@ -26,13 +26,20 @@ export async function recomputeTransactionStatusesForMerchant(
   const candidates = await client.query<CandidateRow>(
     `SELECT id, status, amount_fils, captured_fils, refunded_fils
        FROM transactions
-      WHERE merchant_id = $1 AND status NOT IN ('authorized', 'voided')
+      WHERE merchant_id = $1 AND status NOT IN ('authorized', 'voided', 'chargeback')
       FOR UPDATE`,
     [merchantId],
   );
 
+  // Authorized rows are not recomputed (their status is not derived from
+  // captured/refunded amounts) but they are still open authorizations.
+  const open = await client.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM transactions WHERE merchant_id = $1 AND status = 'authorized'`,
+    [merchantId],
+  );
+  const openAuthorizations = Number(open.rows[0]?.n ?? 0);
+
   let updated = 0;
-  let openAuthorizations = 0;
 
   for (const row of candidates.rows) {
     const next = nextStatusAfterRefund({
@@ -44,7 +51,6 @@ export async function recomputeTransactionStatusesForMerchant(
       await client.query(`UPDATE transactions SET status = $2 WHERE id = $1`, [row.id, next]);
       updated += 1;
     }
-    if (row.status === "authorized") openAuthorizations += 1;
   }
 
   return { merchantId, scanned: candidates.rows.length, updated, openAuthorizations };

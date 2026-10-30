@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useDashboardAuth } from "./DashboardAuthContext.js";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 /**
  * Route guard: renders its children only once `GET /v1/auth/me` has
@@ -16,11 +17,12 @@ import { useDashboardAuth } from "./DashboardAuthContext.js";
 export function RequireDashboardAuth({ children }: { children: ReactNode }) {
   const { status } = useDashboardAuth();
   const location = useLocation();
+  const { t } = useI18n();
 
   if (status === "loading") {
     return (
       <main className="dash-centered">
-        <p>Checking your session...</p>
+        <p>{t("Checking your session...")}</p>
       </main>
     );
   }

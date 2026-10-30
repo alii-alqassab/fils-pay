@@ -8,7 +8,11 @@ import {
 } from "../../api/transactions.js";
 import { ApiError, describeError } from "../../api/client.js";
 import { RequireRole } from "../../auth/RequireRole.js";
-import { bhd, dash, dateTime } from "../../format.js";
+import { RefundDrawer } from "./RefundDrawer.js";
+import { bhd, dash } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
+import { label } from "../../i18n/labels.js";
+import { tk } from "../../i18n/translate.js";
 import type { TransactionDto, TransactionEventDto } from "../../types.js";
 
 type LoadState =
@@ -30,6 +34,7 @@ type LoadState =
 // FH: RefundDrawer import removed 2026-06 until the route exists
 export function TransactionDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const { t, formatDateTime } = useI18n();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [events, setEvents] = useState<TransactionEventDto[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -64,10 +69,16 @@ export function TransactionDetailPage() {
   async function handleCapture(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     if (!id) return;
+    const trimmed = captureAmount.trim();
+    // The field is whole fils. Reject "1e3", "1.5", "-5", "0x10" etc. up
+    // front rather than let Number() quietly coerce them.
+    if (trimmed !== "" && (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(Number(trimmed)) || Number(trimmed) < 1)) {
+      setActionError(tk("Enter a whole number of fils (1 or more), or leave blank to capture everything outstanding."));
+      return;
+    }
     setSubmitting(true);
     setActionError(null);
     try {
-      const trimmed = captureAmount.trim();
       // Left blank, `amountFils` is omitted entirely and capture.ts captures
       // everything still outstanding — its own documented default. Computing
       // the remainder here would just be a second, staler copy of that rule.
@@ -90,7 +101,7 @@ export function TransactionDetailPage() {
   /** Only offered while status is authorized. */
   async function handleVoid(): Promise<void> {
     if (!id) return;
-    if (!window.confirm("Void this authorization? The held funds are released and cannot be captured afterwards.")) {
+    if (!window.confirm(t("Void this authorization? The held funds are released and cannot be captured afterwards."))) {
       return;
     }
     setSubmitting(true);
@@ -109,15 +120,15 @@ export function TransactionDetailPage() {
   }
 
   if (state.kind === "loading") {
-    return <p>Loading...</p>;
+    return <p>{t("Loading...")}</p>;
   }
   if (state.kind === "not_found") {
     return (
       <section>
-        <h1>Transaction not found</h1>
+        <h1>{t("Transaction not found")}</h1>
         <p>
-          No transaction with this id exists on your account.{" "}
-          <Link to="/dashboard/transactions">Back to transactions</Link>
+          {t("No transaction with this id exists on your account.")}{" "}
+          <Link to="/dashboard/transactions">{t("Back to transactions")}</Link>
         </p>
       </section>
     );
@@ -125,8 +136,8 @@ export function TransactionDetailPage() {
   if (state.kind === "error") {
     return (
       <section>
-        <h1>Transaction</h1>
-        <p className="dash-error">{state.message}</p>
+        <h1>{t("Transaction")}</h1>
+        <p className="dash-error">{t(state.message)}</p>
       </section>
     );
   }
@@ -137,50 +148,48 @@ export function TransactionDetailPage() {
 
   return (
     <section>
-      <h1>Transaction</h1>
+      <h1>{t("Transaction")}</h1>
       <p className="dash-muted">
         <code>{txn.id}</code>
       </p>
 
       <dl className="dash-dl">
-        <dt>Status</dt>
+        <dt>{t("Status")}</dt>
         <dd>
-          <span className={`dash-status dash-status-${txn.status}`}>{txn.status}</span>
+          <span className={`dash-status dash-status-${txn.status}`}>{label(t, txn.status)}</span>
         </dd>
-        <dt>Authorized amount</dt>
+        <dt>{t("Authorized amount")}</dt>
         <dd>{bhd(txn.amountFils)}</dd>
-        <dt>Captured amount</dt>
+        <dt>{t("Captured amount")}</dt>
         <dd>{bhd(txn.capturedFils)}</dd>
-        <dt>Currency</dt>
+        <dt>{t("Currency")}</dt>
         <dd>{txn.currency}</dd>
-        <dt>Reference</dt>
+        <dt>{t("Reference")}</dt>
         <dd>{dash(txn.reference)}</dd>
-        <dt>Acquirer reference</dt>
+        <dt>{t("Acquirer reference")}</dt>
         <dd>
           <code>{txn.acquirerReference}</code>
         </dd>
-        <dt>Occurred at</dt>
-        <dd>{dateTime(txn.occurredAt)}</dd>
-        <dt>Created at</dt>
-        <dd>{dateTime(txn.createdAt)}</dd>
+        <dt>{t("Occurred at")}</dt>
+        <dd>{formatDateTime(txn.occurredAt)}</dd>
+        <dt>{t("Created at")}</dt>
+        <dd>{formatDateTime(txn.createdAt)}</dd>
       </dl>
 
       {/* Capture and void are hidden from `support` as a UX choice — a support
           agent looks things up, they don't move money. Unlike the
-          reconciliation page, this hide is NOT backed by a matching
-          server-side role check: the API gates capture/void at "any
-          authenticated merchant actor". Do not mistake a hidden button here for a security
-          boundary. */}
+          reconciliation page, the API also enforces this server side:
+          capture and void require the owner or finance role for sessions. */}
       <RequireRole allow={["owner", "finance"]}>
         {capturable || voidable ? (
           <div className="dash-actions">
-            {actionError ? <p className="dash-error">{actionError}</p> : null}
+            {actionError ? <p className="dash-error">{t(actionError)}</p> : null}
 
             {capturable ? (
               captureOpen ? (
                 <form className="dash-form dash-form-inline" onSubmit={(e) => void handleCapture(e)}>
                   <label>
-                    Amount in fils (blank captures everything outstanding)
+                    {t("Amount in fils (blank captures everything outstanding)")}
                     <input
                       type="number"
                       min={1}
@@ -190,7 +199,7 @@ export function TransactionDetailPage() {
                     />
                   </label>
                   <button type="submit" className="dash-button" disabled={submitting}>
-                    {submitting ? "Capturing..." : "Capture"}
+                    {submitting ? t("Capturing...") : t("Capture")}
                   </button>
                   <button
                     type="button"
@@ -198,12 +207,12 @@ export function TransactionDetailPage() {
                     disabled={submitting}
                     onClick={() => setCaptureOpen(false)}
                   >
-                    Cancel
+                    {t("Cancel")}
                   </button>
                 </form>
               ) : (
                 <button type="button" className="dash-button" onClick={() => setCaptureOpen(true)}>
-                  Capture
+                  {t("Capture")}
                 </button>
               )
             ) : null}
@@ -215,21 +224,23 @@ export function TransactionDetailPage() {
                 disabled={submitting}
                 onClick={() => void handleVoid()}
               >
-                Void
+                {t("Void")}
               </button>
             ) : null}
           </div>
         ) : null}
       </RequireRole>
 
-      <h2>Event timeline</h2>
+      <RefundDrawer txn={state.txn} onRefunded={load} />
+
+      <h2>{t("Event timeline")}</h2>
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Occurred</th>
-            <th>Event</th>
-            <th>Amount</th>
-            <th>Actor</th>
+            <th>{t("Occurred")}</th>
+            <th>{t("Event")}</th>
+            <th>{t("Amount")}</th>
+            <th>{t("Actor")}</th>
           </tr>
         </thead>
         <tbody>
@@ -237,7 +248,7 @@ export function TransactionDetailPage() {
               here, so the page can't disagree with the API about history. */}
           {events.map((event) => (
             <tr key={event.id}>
-              <td>{dateTime(event.occurredAt)}</td>
+              <td>{formatDateTime(event.occurredAt)}</td>
               <td>{event.eventType}</td>
               <td>{event.amountFils === null ? "—" : bhd(event.amountFils)}</td>
               <td>
@@ -252,14 +263,14 @@ export function TransactionDetailPage() {
           ))}
           {events.length === 0 ? (
             <tr>
-              <td colSpan={4}>No events recorded.</td>
+              <td colSpan={4}>{t("No events recorded.")}</td>
             </tr>
           ) : null}
         </tbody>
       </table>
 
       <p>
-        <Link to="/dashboard/transactions">Back to transactions</Link>
+        <Link to="/dashboard/transactions">{t("Back to transactions")}</Link>
       </p>
     </section>
   );

@@ -1,0 +1,59 @@
+# Discovery findings (new problems found by the audit)
+
+CONFIRMED = the agent traced the code path. SUSPECTED = depends on config, deployment or intent.
+Paths are relative to `apps/api/src`. Disposition shows what the orchestrator did with each finding.
+
+## DISC-1: API security sweep (read-only agent)
+
+| ID | Sev | Status | Location | Problem | Disposition |
+|---|---|---|---|---|---|
+| S-1 | High | CONFIRMED | `routes/transactions.ts:113-155` | Capture and void use only `requireMerchantAuth`, so a `support` session can capture money or void authorizations; `finance` can void (TODO(FH)). | Wave 2, agent W2-A (role gate for sessions; API keys unchanged). |
+| S-2 | High | CONFIRMED | `routes/auth.ts`, `adminAuth.ts`, `businessProfile.ts`, `paymentLinks.ts`, `app.ts` | No rate limiting anywhere: unlimited password guessing, unlimited OTP emails to a victim, argon2 CPU DoS, card testing on public `/pay`, signup flooding. | Wave 2, agent W2-E. |
+| S-3 | Med-High | CONFIRMED | `paymentLinks/read.ts:42-52,74-75` | Public `GET /v1/payment-links/:token` returns the merchant's latest API key `key_hash` and key prefix. | Wave 2, agent W2-B. |
+| S-4 | Medium | CONFIRMED | `routes/adminMerchants.ts:161-197`, `onboarding/review.ts` | Single KYC approve has no precondition on status or documents; only bulk approve requires `under_review`. | OPEN - REQUIRES DECISION (business rule). |
+| S-5 | Medium | CONFIRMED | `admin/adjustmentImport.ts`, `routes/adminAdjustmentImport.ts` | CSV import has no threshold, second approver or row cap: a single finance admin bypasses the credit maker-checker. | OPEN - REQUIRES DECISION (business rule). |
+| S-6 | Medium | CONFIRMED | `webhooks/transport.ts:75-92`, `create.ts` | SSRF: DNS-rebinding gap between check and fetch; names resolving to private IPs register fine; blocklist misses NAT64, 6to4, `192.0.0.0/24`, `198.18.0.0/15`; test-send returns a response excerpt. | Wave 2, agent W2-C. |
+| S-7 | Medium | CONFIRMED | `admin/impersonation.ts:84-88` | Impersonating `super_admin` maps to merchant `owner`, `finance` to `finance`, although `HANDOVER.md` says always `support`. Also any admin role can start impersonation; `CLAUDE.md` claims a `super_admin` middleware check that does not exist (route is `/v1/admin/merchants/:id/impersonate`). | Wave 2, agent W2-F for the role mapping; who may start impersonation stays OPEN - REQUIRES DECISION. |
+| S-8 | Med | SUSPECTED | `auth/requireMerchantAuth.ts:152` | API keys bypass every role check (also reported by KEY-1): a leaked key can register a webhook to an attacker URL and read events. | OPEN - REQUIRES DECISION (product/security). |
+| S-9 | Low-Med | CONFIRMED | `onboarding/businessProfile.ts:100-118` | PATCH keys not whitelisted (inherited keys give 500, comment "fixed map" is false); values unvalidated; identity fields editable after KYC approval without re-review. | Wave 2, agent W2-D (whitelist and validation; re-review rule stays a decision). |
+| S-10 | Low-Med | CONFIRMED | `reporting/savedFilters.ts:28-31` | The "50 saved filters" cap cited in a comment does not exist; name/filter unbounded. | Wave 2, agent W2-D. |
+| S-11 | Low | SUSPECTED | `routes/reporting.ts:34-45` | Client `filter.merchantId` honoured for split-children; malformed input gives 500. | OPEN - confirm intent. |
+| S-12 | Low | CONFIRMED | `plugins/errorHandler.ts:21-35` | Framework errors with `statusCode` (bad JSON, 413, 415) become 500. | Wave 2, agent W2-D. |
+| S-13 | Low | CONFIRMED | `routes/transactions.ts`, `transactions/query.ts`, `paymentLinks/query.ts`, `settlement/query.ts` | Bad amounts, `limit=abc`, non-UUID ids, bad cursors become 500. | Wave 2, agent W2-A. |
+| S-14 | Low | CONFIRMED | `webhooks/testSend.ts`, `list.ts` | Deleted endpoints can still be test-sent and have deliveries listed. | Wave 2, agent W2-C. |
+| S-15 | Low | CONFIRMED | `paymentLinks/pay.ts` | The new 409 double-charge body leaks `linkTransactionId` (another customer's transaction id) to an unauthenticated caller. Introduced by PAY-1's fix. | Wave 2, agent W2-B. |
+| S-16 | Low | SUSPECTED | `app.ts:42` | No `trustProxy`, so IPs behind a load balancer are wrong. | Wave 2, agent W2-E (config-driven). |
+| S-17 | Low | CONFIRMED | `routes/auth.ts:~62-75` | `/email-login` runs up to 25 serial argon2 verifies per request. | Wave 2, agent W2-E. |
+| S-18 | Low | CONFIRMED | `transactions/exportCsv.ts` | CSV export buffers all rows, no cap; streaming function exists unused. | OPEN (low; `AGENTS.md` says intentional). |
+| S-19 | Low (dev) | SUSPECTED | `config.ts` `parseNodeEnv` | Unset `NODE_ENV` means development: `devOtpCode` returned in login, SSRF guards off, cookies non-Secure. Staging reportedly runs with it unset. | OPEN - REQUIRES DECISION (fail closed vs. default). |
+| S-20 | Info | CONFIRMED | `scripts/lib/sqlFilter.ts` | Dead helper interpolates identifiers. | OPEN (dead code; delete after owner agrees). |
+| S-21 | Info | SUSPECTED | `routes/adminMerchants.ts`, `webhooks/replayBatch.ts` | Any admin role can trigger replays and archives; reads of KYC files are not audited. | OPEN. |
+
+Checked and found OK (agent): merchant-scoped queries on transactions, payment links, settlement, webhooks, API keys, KYC documents and analytics; void/capture row locks; cookie flags and CORS allowlist; argon2id; webhook secrets not logged or listed; `v1/routes/transactions.ts` is not registered.
+
+## DISC-2: financial integrity sweep (agent ran real capture/refund/void and the Go run-batch on its own seeded database)
+
+Verified OK: the deferred balance trigger fires at COMMIT; the append-only triggers work; seed has 0 unbalanced groups and all 1,305 scheme lines are multiples of 10 fils; fees match between capture ledger and settlement batch for a discounted merchant; void vs capture race resolves cleanly (409); payout is protected against double-pay (row lock + status guard + unique partial index on disbursements); split allocation sums exactly.
+
+| ID | Sev | Status | Where | Problem | Disposition |
+|---|---|---|---|---|---|
+| F-1 | High | CONFIRMED | `batch.go` CloseBatch/PayoutBatch; `processRefund.ts`; `admin/credits.ts`; `refunds.settlement_batch_id` (0042) | Nothing ever sets `refunds.settlement_batch_id`; payout is batch gross minus fee only. Test: capture 1,000,001 fils, refund 400,000 (+10,000 fee reversal), same-day batch pays net 1,121,266 with no deduction; `merchant_payable` ledger = -390,000 (overpaid 390 BD, no recovery path) and `merchant_balances` cache = 0, so cache and ledger diverge. Manual credits and MDR adjustments have the same gap. Refunds are not live yet (route is 501), but credits already are. | OPEN - REQUIRES DECISION (finance: how refunds, credits and adjustments flow into payout). Interim option: block payout when `merchant_payable` is below the batch net. |
+| F-2 | High | CONFIRMED | `batch.go` RunDailyBatch (returns on first error), `scheme_export.go`, migration 0050 (`amount NUMERIC(10,2)`); no max amount at the API | Authorizing and capturing 100,000,000,000 fils makes CloseBatch fail with "numeric field overflow" at the scheme line insert; every merchant after it in id order stays unsettled, and the daemon retries every tick forever. Same for any CloseBatch error (e.g. bad split config). | Wave 3 agent W3-A (continue to next merchant, report failures at end); amount cap goes to W2-A. |
+| F-3 | Medium | SUSPECTED | `payments/authorize.ts:106`, `capture.ts:153` | Acquirer idempotency key is `claimRowId:attemptCount`; after an ambiguous acquirer error or rollback the retry sends a NEW key, so if the first call actually succeeded the acquirer could authorize or capture twice. `processRefund` already uses a stable derived key. Simulator cannot show it. | Wave 3 agent W3-B. |
+| F-4 | Medium | CONFIRMED | `capture.ts` (no hold check), `scripts/expire_holds.ts`, `authorize.ts:121` | After a hold is marked `expired` the transaction stays `authorized`; capture still succeeds and the hold stays `expired`; after a partial capture the remainder can never be released (void returns 409, hold stays `active`). | OPEN - REQUIRES DECISION (what should expiry do to an authorization). |
+| F-5 | Medium | CONFIRMED | `routes/transactions.ts`, `plugins/errorHandler.ts` | `toFils` RangeError becomes 500; amount `0` reaches the acquirer (approved) and then the INSERT hits `CHECK amount_fils>0` and rolls back with 500, which with a real acquirer would leave an orphan authorization. | W2-A (route validation, message sent) and W3-B (guard inside `authorize.ts` before the acquirer call). |
+| F-6 | Medium | CONFIRMED | `db/seed/generate.ts:212` | `npm run seed` fails on every database since migration 0078 ("ledger_entries is append-only; TRUNCATE is not allowed"); no `NODE_ENV`/host guard; `TRUNCATE ... CASCADE` hits every table that references merchants. Seeded ledger descriptions also do not match `processRefund`'s fee lookup. | Wave 3 agent W3-C. |
+| F-7 | Low-Med | SUSPECTED | `recalculate_mdr.go:67,147,167` | Recompute uses `merchants.mdr_bps` and the current tier, ignoring `fee_schedules` and the recorded tier bonus, so a merchant with a schedule row gets a spurious diff posted; paid batches are never corrected since the daemon pays at once. | OPEN - REQUIRES DECISION (policy for paid batches), then fix. |
+| F-8 | Low | SUSPECTED | `payments/discountAdjustment.ts` via `routes/transactions.ts:134`, `pay.ts:161` | The rebate is posted in a separate transaction after capture commits; a crash in between leaves the ledger without the rebate while the batch fee uses the discount. | OPEN (design: post inside the capture transaction). |
+| F-9 | Low | CONFIRMED | `payments/idempotency.ts` | No retention or cleanup for `idempotency_keys`; comment cites a script that does not exist. | OPEN. |
+| F-10 | Low | CONFIRMED | migration 0007 | A balanced group can span two merchants (only the global sum is checked); no DB CHECK on `refunded_fils <= captured_fils`. | OPEN. |
+| F-11 | Low | CONFIRMED | `docs/exports`, `docs/archive` | No card, IBAN or phone data. 192 staff emails at an `.example` domain, 1 merchant email, 14 `fp_live_` key prefixes (prefix only), merchant ids and payout amounts labelled "prod" tracked in git. | OPEN - owner to confirm the data is sanitised. |
+
+Not verified by the agent: cache vs ledger drift after `rebuild-balances --merchant` (the per-merchant call appeared not to persist); events that fall in an already-closed window stay unbatched until a manual `run-batch --date`.
+
+## Found during integration (orchestrator and DOC-1)
+
+| ID | Sev | Status | Where | Problem | Disposition |
+|---|---|---|---|---|---|
+| D-1 | Medium | CONFIRMED by code reading, not run live | `routes/auth.ts` `GET /v1/auth/me` (`requireSession`); `apps/web/src/auth/DashboardAuthContext.tsx` | "View as merchant" cannot work end to end: the admin console can create an impersonation grant and cookie, but the merchant dashboard's auth gate calls `/v1/auth/me`, which accepts only a real merchant session, and a code comment in the dashboard says impersonation does not exist in the merchant plane. The dashboard would show its login page. | OPEN - REQUIRES DECISION (needs `/me` to accept the impersonation cookie plus UI work; interacts with DISC-S-7). |
+| D-2 | Low | CONFIRMED | `apps/reporting` tests | Reporting tests fail (5 of 12) when run after the API tests on the same database, because locked API tests (`dispatcher.test.ts`, `archiveReplay.test.ts`) leave `transaction.captured` outbox rows with no `merchantId`, and the reporting consumer then trips on `merchant_id NOT NULL`. On a clean database reporting passes 12/12. The baseline database shows the same leftover rows, so this predates the audit. | OPEN (test isolation; run reporting tests on a clean database, or have the consumer skip malformed events). |

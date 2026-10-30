@@ -3,8 +3,13 @@ import { CheckoutPage } from "./pages/checkout/CheckoutPage.js";
 import { DashboardAuthProvider } from "./auth/DashboardAuthContext.js";
 import { RequireDashboardAuth } from "./auth/RequireDashboardAuth.js";
 import { RoleGatedPage } from "./auth/RequireRole.js";
+import { tk } from "./i18n/translate.js";
 import { DashboardLayout } from "./components/DashboardLayout.js";
 import { LoginPage } from "./pages/dashboard-login/LoginPage.js";
+import { RegisterPage } from "./pages/dashboard-login/RegisterPage.js";
+import { JoinCompanyPage } from "./pages/dashboard-login/JoinCompanyPage.js";
+import { TeamPage } from "./pages/team/TeamPage.js";
+import { OnboardingPage } from "./pages/onboarding/OnboardingPage.js";
 import { TransactionListPage } from "./pages/transactions/TransactionListPage.js";
 import { TransactionDetailPage } from "./pages/transactions/TransactionDetailPage.js";
 import { PaymentLinkListPage } from "./pages/payment-links/PaymentLinkListPage.js";
@@ -17,10 +22,12 @@ import { SettlementBatchListPage } from "./pages/settlement/SettlementBatchListP
 import { SettlementBatchDetailPage } from "./pages/settlement/SettlementBatchDetailPage.js";
 import { ReconciliationPage } from "./pages/settlement/ReconciliationPage.js";
 import { OverviewPage } from "./pages/overview/OverviewPage.js";
+import { RouteErrorBoundary, RouteNotFound } from "./components/RouteFallback.js";
 
 // MK: /refunds route removed until FP-212
 export const router = createBrowserRouter([
-  { path: "/pay/:token", element: <CheckoutPage /> },
+  { path: "/", element: <Navigate to="/dashboard/login" replace /> },
+  { path: "/pay/:token", element: <CheckoutPage />, errorElement: <RouteErrorBoundary /> },
 
   {
     // The session provider wraps the dashboard subtree only — never
@@ -32,8 +39,11 @@ export const router = createBrowserRouter([
         <Outlet />
       </DashboardAuthProvider>
     ),
+    errorElement: <RouteErrorBoundary />,
     children: [
       { path: "/dashboard/login", element: <LoginPage /> },
+      { path: "/dashboard/register", element: <RegisterPage /> },
+      { path: "/dashboard/join", element: <JoinCompanyPage /> },
       {
         // One shell, one guard for everything below login. The guard is
         // navigation only — the API re-checks the merchant session on every
@@ -45,6 +55,7 @@ export const router = createBrowserRouter([
         ),
         children: [
           { path: "/dashboard", element: <Navigate to="/dashboard/transactions" replace /> },
+          { path: "/dashboard/onboarding", element: <OnboardingPage /> },
 
           { path: "/dashboard/transactions", element: <TransactionListPage /> },
           { path: "/dashboard/transactions/:id", element: <TransactionDetailPage /> },
@@ -55,7 +66,7 @@ export const router = createBrowserRouter([
             // why rather than shown a form that will 403 on submit.
             path: "/dashboard/payment-links/new",
             element: (
-              <RoleGatedPage allow={["owner", "finance"]} title="New payment link">
+              <RoleGatedPage allow={["owner", "finance"]} title={tk("New payment link")}>
                 <PaymentLinkCreatePage />
               </RoleGatedPage>
             ),
@@ -70,7 +81,7 @@ export const router = createBrowserRouter([
           {
             path: "/dashboard/webhooks",
             element: (
-              <RoleGatedPage allow={["owner", "finance"]} title="Webhook endpoints">
+              <RoleGatedPage allow={["owner", "finance"]} title={tk("Webhook endpoints")}>
                 <WebhookEndpointListPage />
               </RoleGatedPage>
             ),
@@ -78,7 +89,7 @@ export const router = createBrowserRouter([
           {
             path: "/dashboard/webhooks/new",
             element: (
-              <RoleGatedPage allow={["owner", "finance"]} title="New webhook endpoint">
+              <RoleGatedPage allow={["owner", "finance"]} title={tk("New webhook endpoint")}>
                 <WebhookEndpointCreatePage />
               </RoleGatedPage>
             ),
@@ -86,7 +97,7 @@ export const router = createBrowserRouter([
           {
             path: "/dashboard/webhooks/:id",
             element: (
-              <RoleGatedPage allow={["owner", "finance"]} title="Webhook endpoint">
+              <RoleGatedPage allow={["owner", "finance"]} title={tk("Webhook endpoint")}>
                 <WebhookEndpointDetailPage />
               </RoleGatedPage>
             ),
@@ -97,8 +108,20 @@ export const router = createBrowserRouter([
           { path: "/dashboard/reconciliation", element: <ReconciliationPage /> },
 
           { path: "/dashboard/overview", element: <OverviewPage /> },
+
+          // Owner only server-side (GET/POST/PATCH /v1/team answer 403 to
+          // everyone else); the gate just explains that instead of showing a failing page.
+          {
+            path: "/dashboard/team",
+            element: (
+              <RoleGatedPage allow={["owner"]} title={tk("Team")}>
+                <TeamPage />
+              </RoleGatedPage>
+            ),
+          },
         ],
       },
     ],
   },
+  { path: "*", element: <RouteNotFound /> },
 ]);

@@ -28,6 +28,9 @@ interface ListQuery {
 }
 
 /** Registered with prefix '/v1/admin/adjustment-imports'. */
+/** Upper bound on rows in one import, so a single request cannot post an unbounded number of ledger legs. */
+const MAX_IMPORT_ROWS = 1000;
+
 export async function adminAdjustmentImportRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Upload and apply a CSV of manual balance adjustments. Applied
@@ -53,14 +56,25 @@ export async function adminAdjustmentImportRoutes(app: FastifyInstance): Promise
         throw new BadRequestError("invalid_request", "originalFilename, if given, must be a string");
       }
 
-      // am: no dry run and no idempotency key — uploading the same csv twice posts it twice
-      // MK: finance checks the spreadsheet before uploading. fine for now
+      // Duplicate parsed row content is rejected by applyAdjustmentImport,
+      // with a database unique index covering concurrent uploads.
       // FH: parseAdjustmentCsv handles 3dp BD amounts correctly (4.750 -> 4750 fils), Claude checked
       const rows = parseAdjustmentCsv(csvContent);
+      if (rows.length > MAX_IMPORT_ROWS) {
+        throw new BadRequestError("too_many_rows", `an adjustment CSV can hold at most ${MAX_IMPORT_ROWS} rows`);
+      }
       for (const row of rows) {
         if (!UUID_RE.test(row.merchantId)) {
           throw new BadRequestError("invalid_csv_row", `"${row.merchantId}" is not a merchant id`);
         }
+      }
+      // An unknown merchant would fail on a foreign key deep inside the import (a 500); say so up front.
+      const ids = [...new Set(rows.map((row) => row.merchantId.toLowerCase()))];
+      if (ids.length > 0) {
+        const known = await app.db.query<{ id: string }>(`SELECT id FROM merchants WHERE id = ANY($1::uuid[])`, [ids]);
+        const knownIds = new Set(known.rows.map((r) => r.id));
+        const unknown = ids.find((id) => !knownIds.has(id));
+        if (unknown) throw new BadRequestError("unknown_merchant", `merchant "${unknown}" does not exist`);
       }
 
       const result = await applyAdjustmentImport(app.db, {

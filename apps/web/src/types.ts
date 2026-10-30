@@ -23,6 +23,7 @@ export interface SimulatedCardInput {
   expiryMonth: number;
   expiryYear: number;
   cvv: string;
+  cardholderName?: string;
 }
 
 export interface PayPaymentLinkResponse {
@@ -40,6 +41,9 @@ export interface ApiErrorBody {
   error: string;
   message?: string;
   stage?: "authorize" | "capture";
+  /** Present on 400 invalid_card: which card field is wrong and why (short codes, never values). */
+  fields?: Record<string, string>;
+  declineReason?: string;
   [key: string]: unknown;
 }
 
@@ -68,8 +72,26 @@ export interface DashboardOtpVerifyResponse {
 export interface DashboardMe {
   merchantUserId: string;
   email: string;
+  fullName?: string | null;
+  status?: string;
   role: MerchantRole;
+  /** Company ID (FP-XXXX-XXXX). The API sends it to the owner only, and only once the company is approved. */
+  companyCode?: string;
   merchant: { id: string; displayName: string; onboardingStatus: string };
+}
+
+export type TeamMemberStatus = "active" | "pending_owner_approval" | "rejected" | "disabled";
+
+/** One row of GET /v1/team. */
+export interface TeamMember {
+  id: string;
+  email: string;
+  fullName: string | null;
+  role: MerchantRole;
+  status: TeamMemberStatus;
+  requestedRole: "finance" | "support" | null;
+  createdAt: string;
+  approvedAt: string | null;
 }
 
 // --- transactions ---
@@ -210,6 +232,12 @@ export interface WebhookDeliveryListResponse {
 export interface ReplayResponse {
   deliveryId: string;
   status: string;
+}
+
+export interface TestWebhookResponse {
+  statusCode: number | null;
+  responseBodyExcerpt: string | null;
+  timedOutOrUnreachable: boolean;
 }
 
 // --- settlement / reconciliation ---

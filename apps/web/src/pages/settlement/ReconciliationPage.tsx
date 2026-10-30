@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getReconciliation } from "../../api/settlement.js";
 import { ApiError, describeError } from "../../api/client.js";
 import { bhd } from "../../format.js";
+import { useI18n } from "../../i18n/I18nProvider.js";
 import type { ReconciliationReport } from "../../types.js";
 
 /**
@@ -29,6 +30,7 @@ function defaultRange(): { from: string; to: string } {
 // FH: 'explained: false' only shows when settlement is mid-run, a refresh fixes it
 // YA: gap != 0 is real when a fee schedule changes mid-period
 export function ReconciliationPage() {
+  const { t } = useI18n();
   const initial = defaultRange();
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
@@ -68,10 +70,9 @@ export function ReconciliationPage() {
   if (forbidden) {
     return (
       <section>
-        <h1>Reconciliation</h1>
+        <h1>{t("Reconciliation")}</h1>
         <p className="dash-error">
-          You don&apos;t have permission to view this report — ask an owner or
-          finance user on your account.
+          {t("You don't have permission to view this report — ask an owner or finance user on your account.")}
         </p>
       </section>
     );
@@ -79,7 +80,7 @@ export function ReconciliationPage() {
 
   return (
     <section>
-      <h1>Reconciliation</h1>
+      <h1>{t("Reconciliation")}</h1>
 
       <form
         className="dash-form dash-form-inline"
@@ -89,19 +90,19 @@ export function ReconciliationPage() {
         }}
       >
         <label>
-          From
+          {t("From")}
           <input type="date" required value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label>
-          To (exclusive)
+          {t("To (exclusive)")}
           <input type="date" required value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
         <button type="submit" className="dash-button" disabled={loading}>
-          {loading ? "Loading..." : "Run report"}
+          {loading ? t("Loading...") : t("Run report")}
         </button>
       </form>
 
-      {error ? <p className="dash-error">{error}</p> : null}
+      {error ? <p className="dash-error">{t(error)}</p> : null}
 
       {report ? (
         <>
@@ -110,36 +111,34 @@ export function ReconciliationPage() {
               the endpoint reports honestly and so does this. */}
           <p>
             {report.explained ? (
-              <span className="dash-badge dash-badge-ok">Reconciled — no gap</span>
+              <span className="dash-badge dash-badge-ok">{t("Reconciled — no gap")}</span>
             ) : (
-              <span className="dash-badge dash-badge-gap">Gap: {bhd(report.gapFils)}</span>
+              <span className="dash-badge dash-badge-gap">{t("Gap:")} {bhd(report.gapFils)}</span>
             )}
           </p>
 
           <dl className="dash-dl">
-            <dt>Period</dt>
+            <dt>{t("Period")}</dt>
             <dd>
-              {report.periodFrom} to {report.periodTo} (exclusive)
+              {t("{from} to {to} (exclusive)", { from: report.periodFrom, to: report.periodTo })}
             </dd>
-            <dt>Ledger merchant payable (net)</dt>
+            <dt>{t("Ledger merchant payable (net)")}</dt>
             <dd>{bhd(report.ledgerMerchantPayableNetFils)}</dd>
-            <dt>Settlement net payout</dt>
+            <dt>{t("Settlement net payout")}</dt>
             <dd>{bhd(report.settlementNetPayoutFils)}</dd>
-            <dt>Pending, not yet batched</dt>
+            <dt>{t("Pending, not yet batched")}</dt>
             <dd>{bhd(report.pendingUnbatchedFils)}</dd>
-            <dt>Gap</dt>
+            <dt>{t("Gap")}</dt>
             <dd>{bhd(report.gapFils)}</dd>
           </dl>
 
           <p className="dash-muted">
-            Gap = ledger merchant payable − settlement net payout − pending
-            unbatched. A zero gap means every captured fil is accounted for in
-            either a settled batch or the pending queue.
+            {t("Gap = ledger merchant payable − settlement net payout − pending unbatched. A zero gap means every captured fil is accounted for in either a settled batch or the pending queue.")}
           </p>
         </>
       ) : null}
 
-      {loading && !report ? <p>Loading...</p> : null}
+      {loading && !report ? <p>{t("Loading...")}</p> : null}
     </section>
   );
 }

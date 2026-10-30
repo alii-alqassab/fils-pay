@@ -1,3 +1,5 @@
+import { useI18n } from "../i18n/I18nProvider.js";
+
 /**
  * The shared "Load more" control for every keyset-paginated list page
  * (transactions, payment links, webhook deliveries, settlement batches).
@@ -17,10 +19,11 @@ export function Pagination({
   onLoadMore: () => void;
   loading: boolean;
 }) {
+  const { t } = useI18n();
   if (!nextCursor) return null;
   return (
     <button type="button" className="dash-button" onClick={onLoadMore} disabled={loading}>
-      {loading ? "Loading..." : "Load more"}
+      {loading ? t("Loading...") : t("Load more")}
     </button>
   );
 }

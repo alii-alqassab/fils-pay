@@ -2,6 +2,7 @@ import { request, requestNoContent } from "./client.js";
 import { buildQuery } from "./query.js";
 import type {
   ReplayResponse,
+  TestWebhookResponse,
   WebhookDeliveryListResponse,
   WebhookDeliveryStatus,
   WebhookEndpointCreateResponse,
@@ -92,6 +93,14 @@ export function replayDelivery(
     `/v1/merchants/${encodeURIComponent(merchantId)}/webhook-endpoints/${encodeURIComponent(
       endpointId,
     )}/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    { method: "POST" },
+  );
+}
+
+/** Synchronously posts a signed test.ping event and returns the receiver response. */
+export function sendTestWebhookEvent(merchantId: string, endpointId: string): Promise<TestWebhookResponse> {
+  return request(
+    `/v1/merchants/${encodeURIComponent(merchantId)}/webhook-endpoints/${encodeURIComponent(endpointId)}/test`,
     { method: "POST" },
   );
 }

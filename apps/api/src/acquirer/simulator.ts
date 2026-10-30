@@ -133,7 +133,12 @@ export function createAcquirerSimulator(config: SimulatorConfig): AcquirerSimula
         ...(rolled.declineReason !== undefined ? { declineReason: rolled.declineReason } : {}),
         latencyMs,
       };
-      authorizeCache.set(req.idempotencyKey, result);
+      // A simulated acquirer error is transient: caching it would make every
+      // retry with this (now stable) idempotency key fail forever. Definitive
+      // outcomes stay cached. Same rule as refund below.
+      if (result.outcome !== "error") {
+        authorizeCache.set(req.idempotencyKey, result);
+      }
       return result;
     },
 
@@ -149,7 +154,9 @@ export function createAcquirerSimulator(config: SimulatorConfig): AcquirerSimula
         acquirerReference: req.acquirerReference,
         latencyMs,
       };
-      captureCache.set(req.idempotencyKey, result);
+      if (result.outcome !== "error") {
+        captureCache.set(req.idempotencyKey, result);
+      }
       return result;
     },
 
@@ -165,7 +172,13 @@ export function createAcquirerSimulator(config: SimulatorConfig): AcquirerSimula
         acquirerReference: req.acquirerReference,
         latencyMs,
       };
-      refundCache.set(req.idempotencyKey, result);
+      // A simulated transport/acquirer error is transient, so retaining it
+      // would make every retry with this idempotency key fail forever. Keep
+      // definitive outcomes cached: in particular, an approved refund must
+      // replay as approved after the caller retries following a DB rollback.
+      if (result.outcome !== "error") {
+        refundCache.set(req.idempotencyKey, result);
+      }
       return result;
     },
   };

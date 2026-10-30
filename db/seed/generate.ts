@@ -88,55 +88,6 @@ const HIGH_VOLUME_MAX_AMOUNT_FILS = 1_500_000; // 1,500.000 BD
  *  timestamps. Deliberately not `new Date()`. */
 const SEED_BASE_DATE = new Date("2026-09-01T12:00:00Z");
 
-// Explicitly truncated tables. Every other table (merchant_business_profiles, kyc_documents, merchant_kyc_reviews,
-// sessions, otp_challenges, api_keys, payment_links, webhook_endpoints,
-// webhook_deliveries, transaction_events, idempotency_keys,
-// merchant_balances, merchant_daily_volume, merchant_payout_trends,
-// legacy_transactions)
-// references merchants, merchant_users, transactions, settlement_batches,
-// or outbox_events via a foreign key, so `TRUNCATE ... CASCADE` below
-// sweeps them automatically without needing to list them here.
-//
-// `reporting_outbox_cursor` is the one exception: it carries no foreign
-// key to anything (it's a per-consumer watermark, not seed fixture data),
-// so CASCADE never reaches it. Without listing it explicitly, a re-seed
-// against an already-seeded, already-consumed database would truncate
-// outbox_events (RESTART IDENTITY resets its id sequence back to 1) while
-// leaving the reporting worker's last_processed_id sitting above every
-// freshly-inserted event's id — silently and permanently halting all
-// future rollup processing, with no error or crash to surface it. Listed
-// here so a re-seed always leaves every outbox consumer's watermark
-// consistent with the outbox it now describes.
-const TABLES_TO_RESET = [
-  "ledger_entries",
-  "scheme_export_lines",
-  "outbox_events",
-  "holds",
-  "settlement_batches",
-  "transactions",
-  "merchant_users",
-  "merchants",
-  "reporting_outbox_cursor",
-  // CSV adjustment imports. Listed explicitly rather than relied on
-  // via CASCADE: adjustment_import_rows would be swept by the merchants
-  // truncate below, but adjustment_imports itself only references
-  // admin_users, so leaving it implicit would make the reset order-
-  // dependent on a table listed for an unrelated reason.
-  "adjustment_imports",
-  "adjustment_import_rows",
-  // platform_stats carries no foreign key to merchants — a platform-wide
-  // singleton, not per-merchant fixture data — so CASCADE never reaches it
-  // either. Listed here (and re-seeded to its zero row below, in the same
-  // transaction) so a re-seed always starts the lifetime-volume counter
-  // back at zero, exactly like a fresh install.
-  "platform_stats",
-  // Admin staff identities. Listed explicitly because admin_users has
-  // no foreign key to merchants — CASCADE never reaches it — and its `email`
-  // is globally unique, so a re-seed that didn't reset it would fail on the
-  // fixture insert. CASCADE from here sweeps admin_sessions,
-  // admin_otp_challenges, admin_audit_log and admin_impersonation_grants.
-  "admin_users",
-] as const;
 
 export interface SeedSummary {
   merchantCount: number;
@@ -165,11 +116,9 @@ interface InsertedMerchant {
 }
 
 /**
- * Truncates every seed table (FK-safe: one multi-table TRUNCATE ... CASCADE,
- * so table order doesn't matter, and RESTART IDENTITY resets the BIGSERIAL
- * sequences backing ledger_entries.id / outbox_events.id) and inserts
- * fresh, deterministic rows keyed off SEED. Running this twice in a row
- * against the same fresh schema produces byte-identical data — see the
+ * Inserts fresh, deterministic rows keyed off SEED into an EMPTY migrated
+ * database (see guard.ts resetDatabase for the reset path). Running this
+ * twice against freshly reset schemas produces byte-identical data — see the
  * `seed-deterministic` assertion in selfVerify.ts.
  *
  * Takes a `Pool` (not a bare `Client`) because the KYC approval step below
@@ -207,9 +156,9 @@ export async function generate(pool: Pool): Promise<SeedSummary> {
   try {
     await client.query("BEGIN");
     try {
-      // AM: only touches the fixture tables listed in TABLES_TO_RESET, so it's
-      // safe to run against a shared/staging database. (see RUNBOOK)
-      await client.query(`TRUNCATE TABLE ${TABLES_TO_RESET.join(", ")} RESTART IDENTITY CASCADE`);
+      // No TRUNCATE: ledger_entries is append-only (migration 0078), so the
+      // seed only inserts into an empty database. index.ts resets via
+      // resetDatabase() (SEED_RESET=1) before calling generate().
 
       // Admin staff fixtures. Ids come from the database's own
       // gen_random_uuid() rather than the seeded rng, deliberately: they are
@@ -629,11 +578,11 @@ export async function generate(pool: Pool): Promise<SeedSummary> {
         // apps/settlement would have left it: PayoutBatch adds each batch's
         // net payout to the running total as that batch is paid, so the
         // seed replays the same additions in the same chronological order.
-        // Math.fround matches the column's `real` precision, so the seeded
-        // figure is what a live run of apps/settlement would have left.
-        let lifetimeEstimate = Math.fround(0);
+        // The column is double precision (0087), exact for whole fils, so a
+        // plain integer sum is what a live run would have left.
+        let lifetimeEstimate = 0;
         for (const batchNet of [...highVolumeDayNets, netFils]) {
-          lifetimeEstimate = Math.fround(lifetimeEstimate + Math.fround(Number(batchNet)));
+          lifetimeEstimate += Number(batchNet);
         }
         await client.query(`UPDATE merchants SET lifetime_net_payout_monitoring_estimate = $2 WHERE id = $1`, [
           merchantId,
@@ -828,8 +777,10 @@ export async function generate(pool: Pool): Promise<SeedSummary> {
       );
       feeScheduleCount += 2;
 
-      // Re-establish the single zero row TRUNCATE just removed.
-      await client.query(`INSERT INTO platform_stats (id, total_processed_fils) VALUES (1, 0)`);
+      // Ensure the single zero row exists (migrations may already insert it).
+      await client.query(
+        `INSERT INTO platform_stats (id, total_processed_fils) VALUES (1, 0) ON CONFLICT (id) DO NOTHING`,
+      );
 
       // The five transactions the pre-launch invoicing-tool import is keyed
       // to. Picked live, now that every other table that can reference

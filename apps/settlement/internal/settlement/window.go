@@ -47,3 +47,13 @@ func BusinessDayWindow(date time.Time) (start, end time.Time) {
 	end = start.AddDate(0, 0, 1)
 	return start, end
 }
+
+// BusinessDayStartAt returns the Asia/Bahrain 00:00 that begins the business
+// day containing the instant t. Unlike BusinessDayWindow, which reads the
+// calendar date of its argument as given (callers pass a date, e.g. a parsed
+// YYYY-MM-DD), this converts a real instant to Bahrain local time first, so a
+// UTC instant at 22:00 correctly maps to the NEXT Bahrain calendar day.
+func BusinessDayStartAt(t time.Time) time.Time {
+	start, _ := BusinessDayWindow(t.In(businessDayLocation))
+	return start
+}

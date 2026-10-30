@@ -2,6 +2,9 @@ import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAdminAuth } from "../auth/AdminAuthContext.js";
 import { describeError, WEB_BASE_URL } from "../api/client.js";
+import { useI18n } from "../i18n/I18nProvider.js";
+import { LanguageToggle } from "../i18n/LanguageToggle.js";
+import { label } from "../i18n/labels.js";
 import { ImpersonationBanner } from "./ImpersonationBanner.js";
 
 /** Nav shell for every admin-plane screen: who you are signed in as, the
@@ -11,6 +14,7 @@ import { ImpersonationBanner } from "./ImpersonationBanner.js";
 export function AdminLayout() {
   const { admin, signOut, impersonation } = useAdminAuth();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
 
   async function handleSignOut(): Promise<void> {
@@ -28,27 +32,32 @@ export function AdminLayout() {
       <ImpersonationBanner />
 
       <header className="admin-header">
-        <div className="admin-brand">FilsPay Admin</div>
+        <div className="admin-brand">
+          <span className="admin-brand-name">FilsPay</span>
+          <small>{t("admin")}</small>
+        </div>
         <nav className="admin-nav">
-          <NavLink to="/merchants">Merchants</NavLink>
-          <NavLink to="/credits">Credits</NavLink>
-          <NavLink to="/settlement">Settlement ops</NavLink>
-          <NavLink to="/adjustment-imports">Import adjustments</NavLink>
-          <NavLink to="/webhooks">Webhook replay</NavLink>
+          <NavLink to="/merchants">{t("Merchants")}</NavLink>
+          <NavLink to="/credits">{t("Credits")}</NavLink>
+          <NavLink to="/settlement">{t("Settlement ops")}</NavLink>
+          <NavLink to="/adjustment-imports">{t("Import adjustments")}</NavLink>
+          <NavLink to="/webhooks">{t("Webhook replay")}</NavLink>
+          {admin?.role === "master" ? <NavLink to="/admins">{t("Admins")}</NavLink> : null}
         </nav>
         <div className="admin-identity">
           {admin ? (
             <span>
-              {admin.email} <span className="admin-role-chip">{admin.role}</span>
+              <bdi>{admin.email}</bdi> <span className="admin-role-chip">{label(t, admin.role)}</span>
             </span>
           ) : null}
+          <LanguageToggle />
           <button type="button" onClick={() => void handleSignOut()}>
-            Log out
+            {t("Log out")}
           </button>
         </div>
       </header>
 
-      {error ? <p className="admin-error">{error}</p> : null}
+      {error ? <p className="admin-error">{t(error)}</p> : null}
 
       {impersonation ? (
         // An explicit "exit view-as-merchant" action is required before
@@ -58,13 +67,12 @@ export function AdminLayout() {
         // impersonation cookie, and the merchant side never reads the admin
         // session cookie.
         <main className="admin-main">
-          <h1>Admin screens are paused</h1>
+          <h1>{t("Admin screens are paused")}</h1>
           <p>
-            An impersonation grant is active. Use <strong>Exit impersonation</strong> above to end it
-            and return to the admin console.
+            {t("An impersonation grant is active. Use “Exit impersonation” above to end it and return to the admin console.")}
           </p>
           <p>
-            Merchant screens are at <code>{WEB_BASE_URL}</code> while the grant lasts.
+            {t("Merchant screens are at")} <code>{WEB_BASE_URL}</code> {t("while the grant lasts.")}
           </p>
         </main>
       ) : (

@@ -13,6 +13,8 @@ export interface SimulatedCardInput {
   expiryMonth: number;
   expiryYear: number;
   cvv: string;
+  /** Name printed on the card (optional; validated when present). */
+  cardholderName?: string;
 }
 
 /** "error" is an acquirer or transport failure, distinct from a decline. */

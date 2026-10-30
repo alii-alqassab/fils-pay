@@ -33,7 +33,12 @@ export function RequireRole({
   fallback?: ReactNode;
 }) {
   const { admin } = useAdminAuth();
-  if (admin && !allow.includes(admin.role)) {
+  // The master can do everything a super_admin can, so it passes wherever
+  // super_admin is listed. Master-only controls list "master" alone.
+  const allowed = admin
+    ? allow.includes(admin.role) || (admin.role === "master" && allow.includes("super_admin"))
+    : true;
+  if (!allowed) {
     return <>{fallback}</>;
   }
   return <>{children}</>;

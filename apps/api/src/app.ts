@@ -10,8 +10,11 @@ import { authRoutes } from "./routes/auth.js";
 import { businessProfileRoutes } from "./routes/businessProfile.js";
 import { kycRoutes } from "./routes/kyc.js";
 import { apiKeyRoutes } from "./routes/apiKeys.js";
+import { companyJoinRoutes } from "./routes/companyJoin.js";
+import { teamRoutes } from "./routes/team.js";
 import { transactionRoutes } from "./routes/transactions.js";
 import { refundRoutes } from "./routes/refunds.js";
+import { merchantRefundRoutes } from "./routes/merchantRefunds.js";
 import { paymentLinkMerchantRoutes, paymentLinkPublicRoutes } from "./routes/paymentLinks.js";
 import { webhookEndpointRoutes } from "./routes/webhooks.js";
 import { settlementRoutes } from "./routes/settlement.js";
@@ -19,6 +22,7 @@ import { analyticsRoutes } from "./routes/analytics.js";
 import { reportingRoutes } from "./routes/reporting.js";
 import { adminRoutes, type AdminRoutesOptions } from "./routes/admin.js";
 import { acquirerCallbackRoutes } from "./routes/acquirerCallbacks.js";
+import { registerRateLimits } from "./lib/rateLimit.js";
 import { createFetchTransport, type WebhookTransport } from "./webhooks/transport.js";
 
 export interface BuildAppOptions {
@@ -39,12 +43,56 @@ export interface BuildAppOptions {
  * tests use `app.inject(...)` against this — no real socket needed.
  */
 export function buildApp(config: Config, pool: Pool, options: BuildAppOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    // S-16: default false (request.ip = socket peer). Set TRUST_PROXY only when
+    // behind a proxy/LB that overwrites X-Forwarded-For (true, hop count, or
+    // CIDR list); trusting it blindly lets clients spoof IPs and dodge limits.
+    // (Fastify's types omit the hop-count number form; proxy-addr accepts it.)
+    trustProxy: (config.trustProxy ?? false) as boolean | string[],
+  });
+
+  // The local web and admin Vite apps use separate origins from the API.
+  // Admin auth uses cookies, so the browser requires an explicit origin and
+  // credentials header (a wildcard origin is invalid for credentialed fetches).
+  const browserOrigins = new Set(config.browserOrigins ?? (config.nodeEnv === "production" ? [] : [
+    "http://localhost:5173", "http://localhost:5174",
+    "http://127.0.0.1:5173", "http://127.0.0.1:5174",
+  ]));
+  app.addHook("onRequest", async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && browserOrigins.has(origin)) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Access-Control-Allow-Credentials", "true");
+      reply.header("Vary", "Origin");
+      reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
+    }
+    if (request.method === "OPTIONS") {
+      return reply.code(origin && browserOrigins.has(origin) ? 204 : 403).send();
+    }
+    // Only our own websites may drive this API from a browser. A browser always attaches an
+    // Origin header to cross-site requests and page scripts cannot change it, so a request whose
+    // Origin is not one of ours was sent by some OTHER website (the cross-site forgery case).
+    // Requests with no Origin (server-to-server callers: API keys, the acquirer's callbacks,
+    // health checks, curl) are not browser requests and are unaffected. A script can fake the
+    // header, which is why this is a guard against other websites, not a substitute for login.
+    if (config.enforceOrigin !== false && origin && !browserOrigins.has(origin)) {
+      return reply.code(403).send({
+        error: "origin_not_allowed",
+        message: "This request came from a website that is not allowed to use this API.",
+      });
+    }
+  });
+
+  // S-2: per-IP rate limits on auth, OTP, public pay and signup (off in
+  // NODE_ENV=test unless RATE_LIMIT_ENABLED=true). See lib/rateLimit.ts.
+  registerRateLimits(app, config);
 
   app.decorate("db", pool);
   app.decorate("config", config);
   app.decorate("acquirer", createAcquirerSimulator(config));
-  app.decorate("webhookTransport", options.webhookTransport ?? createFetchTransport());
+  app.decorate("webhookTransport", options.webhookTransport ?? createFetchTransport(config));
 
   app.register(cookiesPlugin);
   app.register(multipartPlugin, { config });
@@ -55,6 +103,8 @@ export function buildApp(config: Config, pool: Pool, options: BuildAppOptions = 
   app.register(businessProfileRoutes, { prefix: "/v1/merchants" });
   app.register(kycRoutes, { prefix: "/v1/merchants" });
   app.register(apiKeyRoutes, { prefix: "/v1/merchants" });
+  app.register(companyJoinRoutes, { prefix: "/v1/company-join" }); // public, rate limited
+  app.register(teamRoutes, { prefix: "/v1/team" }); // owner only, session only
   // v1/routes/transactions.ts is NOT this one. that tree is dead — MK
   app.register(transactionRoutes, { prefix: "/v1/transactions" });
   // FP-212: RefundDrawer posts to /v1/merchants/:id/refunds, initiateMerchantRefund expects
@@ -62,6 +112,8 @@ export function buildApp(config: Config, pool: Pool, options: BuildAppOptions = 
   // MK: keep /v1/refunds, API.md documents it. the drawer is wrong
   // FH: API.md has both?? asked in #eng, no answer yet (12/10/2026)
   app.register(refundRoutes, { prefix: "/v1/refunds" });
+  // The working refund endpoint (what the dashboard uses); /v1/refunds above stays the old 501 stub.
+  app.register(merchantRefundRoutes, { prefix: "/v1/merchants" });
   app.register(paymentLinkMerchantRoutes, { prefix: "/v1/merchants" });
   app.register(paymentLinkPublicRoutes, { prefix: "/v1/payment-links" });
   app.register(webhookEndpointRoutes, { prefix: "/v1/merchants" });

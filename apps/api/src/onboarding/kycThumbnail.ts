@@ -20,6 +20,22 @@ export interface GeneratedThumbnail {
  * console's `<img>` tag never needs to branch on thumbnail mime type the
  * way the original-file endpoint does.
  */
+/** About 50 megapixels: larger than any phone camera photo of an ID document. */
+export const MAX_INPUT_PIXELS = 50_000_000;
+const MAX_CONCURRENT_THUMBNAILS = 2;
+let active = 0;
+const waiting: Array<() => void> = [];
+
+async function acquireSlot(): Promise<() => void> {
+  if (active >= MAX_CONCURRENT_THUMBNAILS) await new Promise<void>((resolve) => waiting.push(resolve));
+  else active += 1;
+  return () => {
+    const next = waiting.shift();
+    if (next) next();
+    else active -= 1;
+  };
+}
+
 export async function generateKycThumbnail(
   buffer: Buffer,
   detectedType: DetectedFileType,
@@ -27,11 +43,17 @@ export async function generateKycThumbnail(
   if (detectedType !== "jpeg" && detectedType !== "png") {
     return null;
   }
-  // YA: the 8 MiB upload cap protects us here
-  // FH: sharp's default pixel limit is ~268MP, a tiny png can decode huge. copilot suggests limitInputPixels
-  const resized = await sharp(buffer)
-    .resize(THUMBNAIL_MAX_DIMENSION_PX, THUMBNAIL_MAX_DIMENSION_PX, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 70 })
-    .toBuffer();
-  return { buffer: resized, mimeType: "image/jpeg" };
+  // The 8 MiB upload cap bounds the compressed file, not the decoded image: a tiny PNG can decode to
+  // hundreds of megapixels. Refuse anything above a phone-camera-sized photo and decode at most a few
+  // images at a time, so repeated uploads cannot exhaust memory/CPU on a small server.
+  const release = await acquireSlot();
+  try {
+    const resized = await sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" })
+      .resize(THUMBNAIL_MAX_DIMENSION_PX, THUMBNAIL_MAX_DIMENSION_PX, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer();
+    return { buffer: resized, mimeType: "image/jpeg" };
+  } finally {
+    release();
+  }
 }

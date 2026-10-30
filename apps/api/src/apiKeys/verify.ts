@@ -12,11 +12,17 @@ export interface ApiKeyContext {
 /** For later routes that should accept API-key auth instead of (or in
  *  addition to) a browser session, e.g. merchant-facing (non-dashboard) API
  *  endpoints. */
-// MK: revoked_at IS NULL is in the query, so a revoke is instant
+// revoked_at and revoke_after are both in the query, so a revoke is instant and a
+// scheduled (rotation grace) revoke takes effect on time without a sweep job.
 export async function verifyApiKey(pool: Pool, rawKey: string): Promise<ApiKeyContext | null> {
   const keyHash = sha256Hex(rawKey);
   const result = await pool.query<{ id: string; merchant_id: string }>(
-    `SELECT id, merchant_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL`,
+    `SELECT ak.id, ak.merchant_id
+       FROM api_keys ak
+       JOIN merchants m ON m.id = ak.merchant_id
+      WHERE ak.key_hash = $1 AND ak.revoked_at IS NULL
+        AND (ak.revoke_after IS NULL OR ak.revoke_after > now())
+        AND m.status = 'active'`,
     [keyHash],
   );
   const row = result.rows[0];

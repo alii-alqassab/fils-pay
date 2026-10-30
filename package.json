@@ -11,13 +11,16 @@
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p db --noEmit && tsc -p scripts --noEmit",
     "test": "npm run test --workspaces --if-present && tsx --test scripts/*.test.ts",
     "migrate": "tsx db/migrate.ts",
-    "seed": "tsx db/seed/index.ts"
+    "seed": "tsx db/seed/index.ts",
+    "master:create": "tsx apps/api/src/cli/master.ts create",
+    "master:reset": "tsx apps/api/src/cli/master.ts reset",
+    "mail:test": "tsx apps/api/src/cli/mailTest.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
     "@types/pg": "^8.11.6",
-    "typescript": "^5.6.3",
-    "tsx": "^4.19.1"
+    "tsx": "^4.19.1",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "pg": "^8.13.1"

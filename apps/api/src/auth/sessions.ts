@@ -61,6 +61,17 @@ export async function promoteSession(
   return expiresAt;
 }
 
+/**
+ * Replaces the session's token with a fresh one and returns the new raw token.
+ * Called at OTP success so the pending token (which existed before the second
+ * factor passed) is never the authenticated credential (session fixation).
+ */
+export async function rotateSessionToken(client: PoolClient, sessionId: string): Promise<string> {
+  const rawToken = randomToken(32);
+  await client.query(`UPDATE sessions SET token_hash = $2 WHERE id = $1`, [sessionId, sha256Hex(rawToken)]);
+  return rawToken;
+}
+
 /** Takes a Pool or a PoolClient so logout can run outside a transaction. */
 export async function revokeSession(client: PoolClient | Pool, sessionId: string): Promise<void> {
   await client.query(`UPDATE sessions SET revoked_at = now() WHERE id = $1`, [sessionId]);
@@ -89,7 +100,11 @@ export async function lookupSession(
     `SELECT s.id AS session_id, s.merchant_user_id, mu.merchant_id, mu.role
        FROM live_sessions s
        JOIN merchant_users mu ON mu.id = s.merchant_user_id
-      WHERE s.token_hash = $1`,
+       JOIN merchants m ON m.id = mu.merchant_id
+      WHERE s.token_hash = $1
+        AND s.authenticated = true
+        AND m.status = 'active'
+        AND mu.status = 'active'`,
     [tokenHash],
   );
   const row = result.rows[0];

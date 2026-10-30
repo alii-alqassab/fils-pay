@@ -1,5 +1,9 @@
 import type { Pool } from "pg";
-import { NotFoundError } from "../lib/errors.js";
+import { AppError, NotFoundError } from "../lib/errors.js";
+import { withTransaction } from "../db/withTransaction.js";
+
+export const ACQUIRER_CALLBACK_OUTCOMES = ["cleared", "confirmed_fraud"] as const;
+export type AcquirerCallbackOutcome = (typeof ACQUIRER_CALLBACK_OUTCOMES)[number];
 
 /** @property outcome Validated against the two allowed values by the route schema. */
 export interface AcquirerCallbackInput {
@@ -7,7 +11,7 @@ export interface AcquirerCallbackInput {
   type: "fraud_review.completed";
   transactionId: string;
   occurredAt: string;
-  outcome: "cleared" | "confirmed_fraud";
+  outcome: AcquirerCallbackOutcome;
   note: string;
 }
 
@@ -25,29 +29,42 @@ interface TransactionMerchantRow {
  * a human decision to void/refund, exactly as today.
  */
 export async function applyAcquirerCallback(pool: Pool, callback: AcquirerCallbackInput): Promise<void> {
-  const txnResult = await pool.query<TransactionMerchantRow>(
-    `SELECT merchant_id FROM transactions WHERE id = $1`,
-    [callback.transactionId],
-  );
-  const txnRow = txnResult.rows[0];
-  if (!txnRow) {
-    throw new NotFoundError("transaction_not_found");
-  }
+  await withTransaction(pool, async (client) => {
+    // Claim callbackId first. The primary key makes redelivery idempotent
+    // across concurrent API replicas; the claim and note commit together.
+    const claim = await client.query<{ callback_id: string }>(
+      `INSERT INTO acquirer_callback_receipts (callback_id)
+       VALUES ($1)
+       ON CONFLICT (callback_id) DO NOTHING
+       RETURNING callback_id`,
+      [callback.callbackId],
+    );
+    if (claim.rows.length === 0) return;
 
-  await pool.query(
-    `INSERT INTO acquirer_callback_notes
+    const txnResult = await client.query<TransactionMerchantRow>(
+      `SELECT merchant_id FROM transactions WHERE id = $1`,
+      [callback.transactionId],
+    );
+    const txnRow = txnResult.rows[0];
+    if (!txnRow) {
+      throw new NotFoundError("transaction_not_found");
+    }
+
+    await client.query(
+      `INSERT INTO acquirer_callback_notes
         (transaction_id, merchant_id, callback_id, callback_type, outcome, note, received_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [
-      callback.transactionId,
-      txnRow.merchant_id,
-      callback.callbackId,
-      callback.type,
-      callback.outcome,
-      callback.note,
-      callback.occurredAt,
-    ],
-  );
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        callback.transactionId,
+        txnRow.merchant_id,
+        callback.callbackId,
+        callback.type,
+        callback.outcome,
+        callback.note,
+        callback.occurredAt,
+      ],
+    );
+  });
 }
 
 /**
@@ -68,6 +85,9 @@ export async function withCallbackRetry<T>(fn: () => Promise<T>, options: Callba
     try {
       return await fn();
     } catch (err) {
+      // Expected application errors (404, 4xx) are deterministic; retrying
+      // them only delays the response. Retry unexpected (transient) errors.
+      if (err instanceof AppError) throw err;
       lastErr = err;
       if (attempt < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));

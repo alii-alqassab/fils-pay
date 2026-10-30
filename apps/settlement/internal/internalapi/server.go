@@ -69,6 +69,22 @@ type runBatchResponse struct {
 	MerchantResults []merchantBatchOutcomeResponse `json:"merchantResults"`
 }
 
+// runBatchPartialFailureResponse is returned (HTTP 500) when RunDailyBatch
+// finished the pass but one or more merchants failed. It keeps the 2xx
+// summary's fields and adds the failures, so a caller that only checks the
+// status still sees "something failed" and the body says exactly what.
+type runBatchPartialFailureResponse struct {
+	Error           string                         `json:"error"`
+	FailedMerchants []merchantBatchFailureResponse `json:"failedMerchants"`
+	BusinessDate    string                         `json:"businessDate"`
+	MerchantResults []merchantBatchOutcomeResponse `json:"merchantResults"`
+}
+
+type merchantBatchFailureResponse struct {
+	MerchantID string `json:"merchantId"`
+	Error      string `json:"error"`
+}
+
 // rebuildDiffResponse is the JSON projection of ledger.RebuildDiff.
 //
 // After is the ledger-derived balance, the same figure
@@ -235,7 +251,8 @@ func handleRunBatch(pool *pgxpool.Pool) http.Handler {
 		}
 
 		report, err := settlement.RunDailyBatch(r.Context(), pool, businessDate, onlyMerchant)
-		if err != nil {
+		var partial *settlement.BatchFailuresError
+		if err != nil && !errors.As(err, &partial) {
 			log.Printf("settlement internal api: run-batch(%s) failed: %v", body.Date, err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "run_batch_failed"})
 			return
@@ -252,6 +269,21 @@ func handleRunBatch(pool *pgxpool.Pool) http.Handler {
 				FeeFils:       int64(result.FeeFils),
 				NetPayoutFils: int64(result.NetPayoutFils),
 			})
+		}
+
+		if partial != nil {
+			log.Printf("settlement internal api: run-batch(%s) finished with %d failed merchant(s)", body.Date, len(partial.Failures))
+			failed := make([]merchantBatchFailureResponse, 0, len(partial.Failures))
+			for _, f := range partial.Failures {
+				failed = append(failed, merchantBatchFailureResponse{MerchantID: f.MerchantID.String(), Error: f.Err.Error()})
+			}
+			writeJSON(w, http.StatusInternalServerError, runBatchPartialFailureResponse{
+				Error:           "run_batch_partial_failure",
+				FailedMerchants: failed,
+				BusinessDate:    report.BusinessDate.Format(businessDateLayout),
+				MerchantResults: results,
+			})
+			return
 		}
 
 		writeJSON(w, http.StatusOK, runBatchResponse{

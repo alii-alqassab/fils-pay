@@ -7,11 +7,12 @@ import {
   createPendingAdminSession,
   lookupPendingAdminSession,
   promoteAdminSession,
+  rotateAdminSessionToken,
   revokeAdminSession,
   type AdminRole,
 } from "../adminAuth/sessions.js";
 import { withTransaction } from "../db/withTransaction.js";
-import { BadRequestError, GoneError, TooManyRequestsError, UnauthorizedError } from "../lib/errors.js";
+import { AppError, BadRequestError, GoneError, TooManyRequestsError, UnauthorizedError } from "../lib/errors.js";
 
 /**
  * A pre-computed argon2id hash of a fixed, never-used dummy password, at the
@@ -71,7 +72,7 @@ export async function adminAuthRoutes(app: FastifyInstance): Promise<void> {
       throw new UnauthorizedError("invalid_credentials");
     }
 
-    const { code, expiresAt, rawToken } = await withTransaction(app.db, async (client) => {
+    const { code, expiresAt, rawToken, sessionId } = await withTransaction(app.db, async (client) => {
       const challenge = await issueAdminChallenge(client, {
         adminUserId: user.id,
         ttlMinutes: app.config.adminOtpTtlMinutes,
@@ -85,10 +86,16 @@ export async function adminAuthRoutes(app: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
         userAgent: (request.headers["user-agent"] as string | undefined) ?? null,
       });
-      return { code: challenge.code, expiresAt: challenge.expiresAt, rawToken: session.rawToken };
+      return { code: challenge.code, expiresAt: challenge.expiresAt, rawToken: session.rawToken, sessionId: session.id };
     });
 
-    sendAdminOtpCode(request.log, app.config, { adminUserId: user.id, email: user.email }, code);
+    try {
+      await sendAdminOtpCode(request.log, app.config, { adminUserId: user.id, email: user.email }, code);
+    } catch (err) {
+      await revokeAdminSession(app.db, sessionId);
+      request.log.error({ err }, "admin otp delivery failed");
+      throw new AppError(503, "otp_delivery_unavailable", "Could not send the sign-in code. Please try again.");
+    }
 
     reply.setCookie(app.config.adminCookieName, rawToken, {
       httpOnly: true,
@@ -123,62 +130,77 @@ export async function adminAuthRoutes(app: FastifyInstance): Promise<void> {
       throw new UnauthorizedError("no_pending_session");
     }
 
-    const challengeResult = await app.db.query<{
-      id: string;
-      code_salt: string;
-      code_hash: string;
-      attempt_count: number;
-      max_attempts: number;
-      expires_at: Date;
-      consumed_at: Date | null;
-    }>(
-      `SELECT id, code_salt, code_hash, attempt_count, max_attempts, expires_at, consumed_at
-         FROM admin_otp_challenges WHERE id = $1`,
-      [pending.otpChallengeId],
-    );
-    const challenge = challengeResult.rows[0];
-    if (!challenge || challenge.consumed_at !== null) {
-      throw new GoneError("otp_expired");
-    }
-    if (challenge.expires_at.getTime() <= Date.now()) {
-      throw new GoneError("otp_expired");
-    }
-
-    // admin path doesn't have the merchant race, the challenge row is read FOR UPDATE — MK
-    if (challenge.attempt_count >= challenge.max_attempts) {
-      await revokeAdminSession(app.db, pending.adminSessionId);
-      throw new TooManyRequestsError("too_many_attempts");
-    }
-
-    const matches = verifyOtpCode(code, challenge.code_salt, challenge.code_hash);
-    if (!matches) {
-      await app.db.query(
-        `UPDATE admin_otp_challenges SET attempt_count = attempt_count + 1 WHERE id = $1`,
-        [challenge.id],
+    const verification = await withTransaction(app.db, async (client) => {
+      // Serialize verification on the pending session and revalidate it after
+      // acquiring the lock, then hold the challenge lock through promotion.
+      const sessionResult = await client.query<{ expires_at: Date }>(
+        `SELECT expires_at FROM admin_sessions
+          WHERE id = $1 AND admin_user_id = $2 AND otp_challenge_id = $3
+            AND authenticated = false AND revoked_at IS NULL
+          FOR UPDATE`,
+        [pending.adminSessionId, pending.adminUserId, pending.otpChallengeId],
       );
-      throw new UnauthorizedError("invalid_code");
-    }
+      const session = sessionResult.rows[0];
+      if (!session || session.expires_at.getTime() <= Date.now()) {
+        return { error: new UnauthorizedError("no_pending_session") };
+      }
 
-    const adminUser = await withTransaction(app.db, async (client) => {
+      const challengeResult = await client.query<{
+        id: string;
+        code_salt: string;
+        code_hash: string;
+        attempt_count: number;
+        max_attempts: number;
+        expires_at: Date;
+        consumed_at: Date | null;
+      }>(
+        `SELECT id, code_salt, code_hash, attempt_count, max_attempts, expires_at, consumed_at
+           FROM admin_otp_challenges WHERE id = $1 AND admin_user_id = $2 FOR UPDATE`,
+        [pending.otpChallengeId, pending.adminUserId],
+      );
+      const challenge = challengeResult.rows[0];
+      if (!challenge || challenge.consumed_at !== null || challenge.expires_at.getTime() <= Date.now()) {
+        return { error: new GoneError("otp_expired") };
+      }
+      if (challenge.attempt_count >= challenge.max_attempts) {
+        await revokeAdminSession(client, pending.adminSessionId);
+        return { error: new TooManyRequestsError("too_many_attempts") };
+      }
+      if (!verifyOtpCode(code, challenge.code_salt, challenge.code_hash)) {
+        await client.query(`UPDATE admin_otp_challenges SET attempt_count = attempt_count + 1 WHERE id = $1`, [
+          challenge.id,
+        ]);
+        // Commit the failed guess before returning its HTTP error.
+        return { error: new UnauthorizedError("invalid_code") };
+      }
+
       await client.query(`UPDATE admin_otp_challenges SET consumed_at = now() WHERE id = $1`, [
         challenge.id,
       ]);
       await promoteAdminSession(client, pending.adminSessionId, app.config.adminSessionTtlHours);
+      // See the merchant verify route: rotation is on by default only in production.
+      const newToken = app.config.rotateSessionOnOtpVerify
+        ? await rotateAdminSessionToken(client, pending.adminSessionId)
+        : null;
       const result = await client.query<{ role: AdminRole }>(
         `SELECT role FROM admin_users WHERE id = $1`,
         [pending.adminUserId],
       );
-      return result.rows[0];
+      const user = result.rows[0];
+      if (!user) {
+        throw new Error("admin otp/verify: admin_users row disappeared mid-transaction");
+      }
+      return { user, newToken };
     });
-    if (!adminUser) {
-      throw new Error("admin otp/verify: admin_users row disappeared mid-transaction");
-    }
+    if (verification.error) throw verification.error;
+    const adminUser = verification.user;
+    const newToken = verification.newToken ?? request.cookies[app.config.adminCookieName] ?? "";
 
     // Re-set the cookie so its browser-side lifetime matches the now-promoted
     // session's full TTL rather than the short pending window.
     // YA: why is the cookie set twice (login and verify)? Claude says remove one
     // FH: the second one re-issues at the full session TTL. the merchant flow should do the same
-    reply.setCookie(app.config.adminCookieName, rawToken, {
+    reply.setCookie(app.config.adminCookieName, newToken, {
       httpOnly: true,
       path: "/",
       sameSite: "lax",

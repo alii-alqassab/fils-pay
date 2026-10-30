@@ -26,5 +26,6 @@ export function buildDelete(
   filters: Record<string, unknown>,
 ): { text: string; values: unknown[] } {
   const { clause, values } = buildWhere(filters);
-  return { text: `DELETE FROM ${table} ${clause}`.trim(), values };
+  // An empty/fully-null filter must never turn into an unbounded delete.
+  return { text: clause ? `DELETE FROM ${table} ${clause}` : `DELETE FROM ${table} WHERE false`, values };
 }

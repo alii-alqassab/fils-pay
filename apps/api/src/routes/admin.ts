@@ -16,6 +16,7 @@ import {
 import { withTransaction } from "../db/withTransaction.js";
 import { AppError, BadRequestError, NotFoundError, UnauthorizedError } from "../lib/errors.js";
 import { adminAdjustmentImportRoutes } from "./adminAdjustmentImport.js";
+import { adminAccountRoutes } from "./adminAccounts.js";
 import { adminAuthRoutes } from "./adminAuth.js";
 import { adminBalanceAdjustmentRoutes } from "./adminBalanceAdjustments.js";
 import { adminCreditRoutes } from "./adminCredits.js";
@@ -79,6 +80,7 @@ export async function adminRoutes(app: FastifyInstance, options: AdminRoutesOpti
   const recalculateMdr = options.settlement?.recalculateMdr ?? triggerMdrRecalculation;
 
   await app.register(adminAuthRoutes, { prefix: "/auth" });
+  await app.register(adminAccountRoutes); // /admins/* (master only) and public /auth/accept-invite
   await app.register(adminMerchantRoutes, { prefix: "/merchants" });
   await app.register(adminMerchantsRecomputeRoutes, { prefix: "/merchants" });
   await app.register(adminMerchantsBulkRoutes, { prefix: "/merchants" });

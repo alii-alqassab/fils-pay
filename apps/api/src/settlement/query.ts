@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { estimateFeeFils } from "../fees/estimate.js";
+import { BadRequestError } from "../lib/errors.js";
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -47,6 +47,20 @@ function toBatchDateString(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+const CURSOR_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CURSOR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function invalidCursor(): BadRequestError {
+  return new BadRequestError("invalid_cursor", "cursor is malformed");
+}
+
+/** Out-of-range values that pass the shape check (e.g. 2026-02-31) fail in Postgres with class 22 errors; surface as 400. */
+function rethrowCursorDbError(err: unknown, hasCursor: boolean): never {
+  const code = (err as { code?: string } | null)?.code;
+  if (hasCursor && typeof code === "string" && code.startsWith("22")) throw invalidCursor();
+  throw err;
+}
+
 /**
  * Maps a settlement_batches row to its DTO. Invariant (enforced by the Go
  * worker at close): netPayoutFils === grossFils - feeFils for every batch.
@@ -89,13 +103,13 @@ function decodeCursor(cursor: string | null | undefined): DecodedCursor | null {
   try {
     decoded = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
-    return null;
+    throw invalidCursor();
   }
   const separatorIndex = decoded.indexOf("|");
-  if (separatorIndex === -1) return null;
+  if (separatorIndex === -1) throw invalidCursor();
   const batchDate = decoded.slice(0, separatorIndex);
   const id = decoded.slice(separatorIndex + 1);
-  if (!batchDate || !id) return null;
+  if (!batchDate || !CURSOR_ID_RE.test(id) || !CURSOR_DATE_RE.test(batchDate)) throw invalidCursor();
   return { batchDate, id };
 }
 
@@ -135,7 +149,7 @@ export async function listSettlementBatches(
       decodedCursor?.id ?? null,
       limit,
     ],
-  );
+  ).catch((err: unknown) => rethrowCursorDbError(err, decodedCursor !== null));
 
   const batches = result.rows.map(serializeBatch);
   const lastRow = result.rows[result.rows.length - 1];
@@ -285,11 +299,15 @@ export async function getReconciliationReport(
   const windowStart = bahrainLocalMidnightUtc(input.from);
   const windowEnd = bahrainLocalMidnightUtc(input.to);
 
-  const [ledgerResult, settlementResult, pendingResult, merchantResult] = await Promise.all([
+  const [ledgerResult, settlementResult, pendingResult] = await Promise.all([
     pool.query<{ net: string }>(
       `SELECT COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_fils ELSE -amount_fils END), 0) AS net
          FROM ledger_entries
         WHERE merchant_id = $1 AND account_id = 'merchant_payable'
+          -- Compare accrued merchant payable to batch net payouts below.
+          -- Payout debits already reduce this ledger balance, so exclude them
+          -- here to avoid subtracting the same payout a second time.
+          AND NOT (direction = 'debit' AND description LIKE 'settlement payout:%')
           AND occurred_at >= $2 AND occurred_at < $3`,
       [input.merchantId, windowStart, windowEnd],
     ),
@@ -300,32 +318,54 @@ export async function getReconciliationReport(
           AND status IN ('closed', 'paid')`,
       [input.merchantId, input.from, input.to],
     ),
-    pool.query<{ amount_fils: string | number }>(
-      `SELECT te.amount_fils
-         FROM transaction_events te
-         JOIN transactions t ON t.id = te.transaction_id
-        WHERE t.merchant_id = $1 AND te.event_type IN ('captured', 'partially_captured')
-          AND te.settlement_batch_id IS NULL
-          AND te.occurred_at >= $2 AND te.occurred_at < $3`,
+    pool.query<{
+      amount_fils: string | number;
+      capture_fee_fils: string | number;
+      negotiated_discount_fils: string | number;
+    }>(
+      `WITH pending AS (
+         SELECT te.id, te.transaction_id, te.amount_fils, te.metadata, te.occurred_at,
+                row_number() OVER (PARTITION BY te.transaction_id ORDER BY te.occurred_at, te.id) AS transaction_row
+           FROM transaction_events te
+           JOIN transactions t ON t.id = te.transaction_id
+          WHERE t.merchant_id = $1 AND te.event_type IN ('captured', 'partially_captured')
+            AND te.settlement_batch_id IS NULL
+            AND te.occurred_at >= $2 AND te.occurred_at < $3
+       ), pending_transactions AS (
+         SELECT transaction_id, MIN(occurred_at) AS first_pending_at FROM pending
+          GROUP BY transaction_id
+       ), discounts AS (
+         SELECT le.transaction_id, SUM(le.amount_fils) AS amount_fils
+           FROM ledger_entries le
+           JOIN pending_transactions pt ON pt.transaction_id = le.transaction_id
+          WHERE le.merchant_id = $1
+            AND le.account_id = 'merchant_payable'
+            AND le.direction = 'credit'
+            AND le.description = 'capture: negotiated discount adjustment'
+            AND le.occurred_at >= pt.first_pending_at AND le.occurred_at < $3
+          GROUP BY le.transaction_id
+       )
+       SELECT p.amount_fils,
+              COALESCE((p.metadata->>'feeFils')::bigint, 0) AS capture_fee_fils,
+              CASE WHEN p.transaction_row = 1 THEN COALESCE(d.amount_fils, 0) ELSE 0 END
+                AS negotiated_discount_fils
+         FROM pending p
+         LEFT JOIN discounts d ON d.transaction_id = p.transaction_id`,
       [input.merchantId, windowStart, windowEnd],
     ),
-    pool.query<{ mdr_bps: number; negotiated_discount_bps: number }>(
-      `SELECT mdr_bps, negotiated_discount_bps FROM merchants WHERE id = $1`,
-      [input.merchantId],
-    ),
   ]);
-
-  // MK: merchants.mdr_bps is kept in sync with the current fee_schedules row by the 0046 trigger,
-  // so reading it here is the same as resolving the schedule
-  const merchant = merchantResult.rows[0];
-  const mdrBps = merchant?.mdr_bps ?? 0;
-  const discountBps = merchant?.negotiated_discount_bps ?? 0;
 
   let pendingUnbatchedFils = 0;
   for (const row of pendingResult.rows) {
     const amountFils = Number(row.amount_fils);
-    const feeFils = estimateFeeFils(amountFils, mdrBps, discountBps);
-    pendingUnbatchedFils += amountFils - feeFils;
+    // Capture metadata records the exact integer MDR fee charged at capture
+    // time (including the then-effective schedule and volume tier). The
+    // negotiated discount is a separate ledger credit and is included from
+    // that journal, so reconciliation follows the posted amount rather than
+    // re-estimating with today's merchant settings.
+    const captureFeeFils = Number(row.capture_fee_fils);
+    const negotiatedDiscountFils = Number(row.negotiated_discount_fils);
+    pendingUnbatchedFils += amountFils - captureFeeFils + negotiatedDiscountFils;
   }
 
   const ledgerMerchantPayableNetFils = Number(ledgerResult.rows[0]?.net ?? 0);
@@ -355,7 +395,7 @@ interface SettlementSummaryRow {
   total_captured_fils: string | number | null;
 }
 
-/** Gross captured in window, joined through transaction_events for batch parity. */
+/** Gross capture-event amounts in the requested window. */
 export async function getSettlementSummary(
   pool: Pool,
   input: { merchantId: string; from: string; to: string },
@@ -364,17 +404,13 @@ export async function getSettlementSummary(
   const windowEnd = bahrainLocalMidnightUtc(input.to);
 
   const result = await pool.query<SettlementSummaryRow>(
-    `WITH captured AS (
-       SELECT t.id, t.captured_fils
-         FROM transactions t
-         JOIN transaction_events te ON te.transaction_id = t.id
-        WHERE t.merchant_id = $1
-          AND te.event_type IN ('captured', 'partially_captured')
-          AND te.occurred_at >= $2 AND te.occurred_at < $3
-     )
-     SELECT COUNT(DISTINCT id) AS transaction_count,
-            COALESCE(SUM(captured_fils), 0) AS total_captured_fils
-       FROM captured`,
+    `SELECT COUNT(DISTINCT t.id) AS transaction_count,
+            COALESCE(SUM(te.amount_fils), 0) AS total_captured_fils
+       FROM transactions t
+       JOIN transaction_events te ON te.transaction_id = t.id
+      WHERE t.merchant_id = $1
+        AND te.event_type IN ('captured', 'partially_captured')
+        AND te.occurred_at >= $2 AND te.occurred_at < $3`,
     [input.merchantId, windowStart, windowEnd],
   );
 

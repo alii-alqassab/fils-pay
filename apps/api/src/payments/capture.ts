@@ -11,36 +11,6 @@ import { ConflictError, UnprocessableEntityError } from "../lib/errors.js";
 import { getEffectiveMdrBps } from "../fees/feeSchedule.js";
 import { getVolumeTierBonusBps } from "../fees/platformVolumeTier.js";
 
-async function recordCaptureMetric(
-  client: import("pg").PoolClient,
-  merchantId: string,
-  amountFils: Fils,
-  capturedAt: Date,
-): Promise<void> {
-  const dateStr = capturedAt.toISOString().slice(0, 10);
-  const existing = await client.query(
-    `SELECT merchant_id FROM merchant_daily_volume WHERE merchant_id = $1 AND volume_date = $2`,
-    [merchantId, dateStr],
-  );
-  if (existing.rows[0]) {
-    await client.query(
-      `UPDATE merchant_daily_volume
-          SET captured_count = captured_count + 1, captured_gross_fils = captured_gross_fils + $3
-        WHERE merchant_id = $1 AND volume_date = $2`,
-      [merchantId, dateStr, amountFils],
-    );
-  } else {
-    await client.query(
-      `INSERT INTO merchant_daily_volume (merchant_id, volume_date, captured_count, captured_gross_fils, voided_count)
-       VALUES ($1, $2, 1, $3, 0)
-       ON CONFLICT (merchant_id, volume_date)
-       DO UPDATE SET captured_count = merchant_daily_volume.captured_count + 1,
-                     captured_gross_fils = merchant_daily_volume.captured_gross_fils + $3`,
-      [merchantId, dateStr, amountFils],
-    );
-  }
-}
-
 const ENDPOINT = "transactions.capture";
 
 export interface CaptureInput {
@@ -89,7 +59,13 @@ export async function captureTransaction(
   acquirer: AcquirerSimulator,
   input: CaptureInput,
 ): Promise<CaptureResult> {
-  const requestHash = hashRequest({ amountFils: input.amountFils ?? null });
+  // The transaction is part of the capture operation's identity. Reusing an
+  // idempotency key for another transaction must conflict instead of replaying
+  // the first transaction's stored response.
+  const requestHash = hashRequest({
+    transactionId: input.transactionId,
+    amountFils: input.amountFils ?? null,
+  });
 
   return withTransaction(pool, async (client) => {
     const claim = await claimIdempotencyKey(client, {
@@ -138,6 +114,21 @@ export async function captureTransaction(
       return { statusCode: 409, body };
     }
 
+    // An authorization whose hold has lapsed can no longer be captured, in full or for
+    // the remainder of a partial capture: the funds were released when the hold expired.
+    const lapsed = await client.query(
+      `SELECT 1 FROM holds
+        WHERE transaction_id = $1
+          AND (status = 'expired' OR (status = 'active' AND expires_at < now()))
+        LIMIT 1`,
+      [txn.id],
+    );
+    if ((lapsed.rowCount ?? 0) > 0) {
+      const body = { error: "authorization_expired" };
+      await completeIdempotencyKey(client, claim.row.id, { statusCode: 409, body });
+      return { statusCode: 409, body };
+    }
+
     // — YA: authorised vs captured. finance says "amount" and means both.
     const amountAuthorized = toFils(Number(txn.amount_fils));
     const capturedSoFar = toFils(Number(txn.captured_fils));
@@ -174,7 +165,14 @@ export async function captureTransaction(
     const acquirerResult = await acquirer.capture({
       acquirerReference: txn.acquirer_reference,
       amountFils: requestedAmount,
-      idempotencyKey: `${claim.row.id}:${claim.row.attemptCount}`,
+      // Stable across retries of the same client key + request (see
+      // authorize.ts / processRefund.ts), even if the claim row is recreated.
+      idempotencyKey: `capture:${hashRequest({
+        merchantId: input.merchantId,
+        endpoint: ENDPOINT,
+        key: input.idempotencyKey,
+        requestHash,
+      })}`,
     });
 
     if (acquirerResult.outcome === "declined") {
@@ -255,7 +253,7 @@ export async function captureTransaction(
       eventType: newStatus === "captured" ? "captured" : "partially_captured",
       amountFils: requestedAmount,
       actor: input.actor,
-      metadata: { feeFils, acquirerReference: acquirerResult.acquirerReference },
+      metadata: { feeFils, volumeTierBonusBps, acquirerReference: acquirerResult.acquirerReference },
     });
 
     const body = serializeTransaction(updatedTxn);
