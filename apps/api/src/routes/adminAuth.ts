@@ -23,6 +23,20 @@ import { AppError, BadRequestError, GoneError, TooManyRequestsError, Unauthorize
 const DUMMY_PASSWORD_HASH =
   "$argon2id$v=19$m=19456,p=1,t=2$/yKuaUqm4SW+pPt2oGNj4A$j5oxu/MdJJP86dClo0LJ0wsekKwkSbr1yA0uZSZgQcc";
 
+/**
+ * DEMO ONLY — fixed sign-in code handed to the judges.
+ *
+ * Accepted at /otp/verify in place of the emailed OTP, but ONLY for the
+ * master account (role = 'master'). Every other admin still needs the real
+ * emailed code. It exists because the master's OTP is delivered to an inbox
+ * the judges don't have; it is NOT a general bypass.
+ *
+ * This is a backdoor on the highest-privilege account. Remove it (and this
+ * constant) the moment the demo is over — do not let it reach anything with
+ * real users.
+ */
+const MASTER_DEMO_OTP = "246810";
+
 interface LoginBody {
   email?: string;
   password?: string;
@@ -143,6 +157,25 @@ export async function adminAuthRoutes(app: FastifyInstance): Promise<void> {
       const session = sessionResult.rows[0];
       if (!session || session.expires_at.getTime() <= Date.now()) {
         return { error: new UnauthorizedError("no_pending_session") };
+      }
+
+      // DEMO ONLY: accept the fixed judges' code in place of the emailed OTP,
+      // but exclusively for the master account. Scoped by role here so no
+      // other admin can ever use it. See MASTER_DEMO_OTP above.
+      const roleResult = await client.query<{ role: AdminRole }>(
+        `SELECT role FROM admin_users WHERE id = $1`,
+        [pending.adminUserId],
+      );
+      if (roleResult.rows[0]?.role === "master" && code === MASTER_DEMO_OTP) {
+        await client.query(
+          `UPDATE admin_otp_challenges SET consumed_at = now() WHERE id = $1 AND consumed_at IS NULL`,
+          [pending.otpChallengeId],
+        );
+        await promoteAdminSession(client, pending.adminSessionId, app.config.adminSessionTtlHours);
+        const demoToken = app.config.rotateSessionOnOtpVerify
+          ? await rotateAdminSessionToken(client, pending.adminSessionId)
+          : null;
+        return { user: roleResult.rows[0], newToken: demoToken };
       }
 
       const challengeResult = await client.query<{
